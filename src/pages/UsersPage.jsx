@@ -149,7 +149,11 @@ export default function UsersPage() {
 
       {users.map((u) => (
         <div key={u.id} className="bg-white rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+          {/* アバター + 名前をクリックでプロフィールへ */}
+          <button
+            onClick={() => navigate(`/profile/${u.id}`)}
+            className="flex items-center gap-3 min-w-0 text-left flex-1 hover:opacity-80 transition"
+          >
             <div className="relative shrink-0">
               <Avatar u={u} />
               {isOnline(u.last_seen_at) && (
@@ -167,7 +171,7 @@ export default function UsersPage() {
                 )}
               </div>
             </div>
-          </div>
+          </button>
           {u.id !== user.id && (
             <button
               onClick={() => navigate(`/dm/${u.id}`)}

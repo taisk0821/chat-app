@@ -92,13 +92,20 @@ export default function DMPage() {
           </button>
           {partner && (
             <>
-              <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-sm shrink-0">
-                {partner.nickname[0].toUpperCase()}
-              </div>
-              <div>
+              {partner.avatar_url ? (
+                <img src={partner.avatar_url} alt={partner.nickname} className="w-8 h-8 rounded-full object-cover shrink-0" />
+              ) : (
+                <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-sm shrink-0">
+                  {partner.nickname[0].toUpperCase()}
+                </div>
+              )}
+              <button
+                onClick={() => navigate(`/profile/${partner.id}`)}
+                className="text-left hover:opacity-70 transition"
+              >
                 <p className="font-semibold text-gray-800 text-sm">{partner.nickname}</p>
                 {partner.bio && <p className="text-xs text-gray-400 truncate">{partner.bio}</p>}
-              </div>
+              </button>
             </>
           )}
         </div>

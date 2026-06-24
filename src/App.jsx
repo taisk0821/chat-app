@@ -6,6 +6,7 @@ import GlobalChatPage from './pages/GlobalChatPage'
 import UsersPage from './pages/UsersPage'
 import DMPage from './pages/DMPage'
 import ProfilePage from './pages/ProfilePage'
+import UserProfilePage from './pages/UserProfilePage'
 
 function PrivateRoute({ children }) {
   const { user } = useUser()
@@ -25,6 +26,7 @@ function AppRoutes() {
       <Route path="/users" element={<PrivateRoute><Layout><UsersPage /></Layout></PrivateRoute>} />
       <Route path="/dm/:userId" element={<PrivateRoute><Layout><DMPage /></Layout></PrivateRoute>} />
       <Route path="/profile" element={<PrivateRoute><Layout><ProfilePage /></Layout></PrivateRoute>} />
+      <Route path="/profile/:userId" element={<PrivateRoute><Layout><UserProfilePage /></Layout></PrivateRoute>} />
       <Route path="*" element={<Navigate to="/chat" replace />} />
     </Routes>
   )
