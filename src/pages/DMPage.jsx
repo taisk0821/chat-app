@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
+import { useDM } from '../context/DMContext'
 
 function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -10,12 +11,18 @@ function formatTime(isoString) {
 export default function DMPage() {
   const { userId } = useParams()
   const { user } = useUser()
+  const { markRead } = useDM()
   const navigate = useNavigate()
   const [partner, setPartner] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const bottomRef = useRef(null)
+
+  // DM画面を開いたら即既読にする
+  useEffect(() => {
+    if (userId) markRead(userId)
+  }, [userId, markRead])
 
   useEffect(() => {
     const fetchPartner = async () => {
@@ -55,6 +62,8 @@ export default function DMPage() {
           if (prev.some((m) => m.id === msg.id)) return prev
           return [...prev, msg]
         })
+        // 相手からのメッセージなら既読マーク
+        if (msg.sender_id === userId) markRead(userId)
       })
       .subscribe()
 
