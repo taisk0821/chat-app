@@ -271,6 +271,48 @@ function DMHistoryModal({ user, onClose }) {
   )
 }
 
+// ---- RLS未設定ガイド ----
+const RLS_SQL = `-- Supabase SQL Editor で実行してください
+create policy "admin_delete_users"
+  on public.users for delete using (true);
+
+create policy "admin_delete_messages"
+  on public.messages for delete using (true);
+
+create policy "admin_delete_direct_messages"
+  on public.direct_messages for delete using (true);`
+
+function RlsGuide() {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard.writeText(RLS_SQL)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+      <p className="text-sm font-semibold text-amber-800">
+        ⚠ 削除が実行されませんでした — Supabase の RLS DELETE ポリシーが未設定です
+      </p>
+      <p className="text-xs text-amber-700">
+        Supabase ダッシュボード → <strong>SQL Editor</strong> で以下の SQL を実行してください。
+        実行後、再度削除を試してください。
+      </p>
+      <div className="relative">
+        <pre className="bg-gray-900 text-green-300 text-xs rounded-lg p-4 overflow-x-auto leading-relaxed">
+{RLS_SQL}
+        </pre>
+        <button
+          onClick={copy}
+          className="absolute top-2 right-2 text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded transition"
+        >
+          {copied ? '✓ コピー済' : 'コピー'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ---- ユーザー管理タブ ----
 function UsersTab() {
   const [users, setUsers] = useState([])
@@ -298,44 +340,59 @@ function UsersTab() {
     setDeletingId(u.id)
     setDeleteStatus(null)
 
-    // Step 1: 送受信DM をまとめて削除
-    const { error: dmErr } = await supabase
+    // Step 1: DM削除（.select() で実際に削除された件数を取得）
+    const { data: deletedDMs, error: dmErr } = await supabase
       .from('direct_messages')
       .delete()
       .or(`sender_id.eq.${u.id},receiver_id.eq.${u.id}`)
+      .select('id')
     if (dmErr) {
-      setDeleteStatus({ type: 'error', msg: `DM削除失敗: ${dmErr.message}` })
-      setDeletingId(null)
-      return
+      console.error('[Admin] DM削除エラー:', dmErr)
+      setDeleteStatus({ type: 'error', msg: `DM削除エラー: ${dmErr.message}` })
+      setDeletingId(null); return
     }
+    console.log('[Admin] DM削除件数:', deletedDMs?.length ?? 0)
 
-    // Step 2: グローバルチャットメッセージを削除
-    const { error: msgErr } = await supabase
+    // Step 2: グローバルチャットメッセージ削除
+    const { data: deletedMsgs, error: msgErr } = await supabase
       .from('messages')
       .delete()
       .eq('nickname', u.nickname)
+      .select('id')
     if (msgErr) {
-      setDeleteStatus({ type: 'error', msg: `チャットメッセージ削除失敗: ${msgErr.message}` })
-      setDeletingId(null)
-      return
+      console.error('[Admin] メッセージ削除エラー:', msgErr)
+      setDeleteStatus({ type: 'error', msg: `メッセージ削除エラー: ${msgErr.message}` })
+      setDeletingId(null); return
     }
+    console.log('[Admin] メッセージ削除件数:', deletedMsgs?.length ?? 0)
 
-    // Step 3: ユーザー本体を削除
-    const { error: userErr } = await supabase
+    // Step 3: ユーザー削除
+    const { data: deletedUser, error: userErr } = await supabase
       .from('users')
       .delete()
       .eq('id', u.id)
+      .select('id')
     if (userErr) {
-      setDeleteStatus({ type: 'error', msg: `ユーザー削除失敗: ${userErr.message}` })
-      setDeletingId(null)
-      return
+      console.error('[Admin] ユーザー削除エラー:', userErr)
+      setDeleteStatus({ type: 'error', msg: `ユーザー削除エラー: ${userErr.message}` })
+      setDeletingId(null); return
+    }
+    console.log('[Admin] ユーザー削除件数:', deletedUser?.length ?? 0)
+
+    // 実際に削除されたか確認（RLS未設定だと error=null のまま 0件になる）
+    if (!deletedUser || deletedUser.length === 0) {
+      setDeleteStatus({ type: 'rls' })
+      setDeletingId(null); return
     }
 
     setUsers((prev) => prev.filter((x) => x.id !== u.id))
     if (selectedUser?.id === u.id) setSelectedUser(null)
-    setDeleteStatus({ type: 'success', msg: `「${u.nickname}」と関連データをすべて削除しました` })
+    setDeleteStatus({
+      type: 'success',
+      msg: `「${u.nickname}」を削除しました（DM: ${deletedDMs?.length ?? 0}件 / チャット: ${deletedMsgs?.length ?? 0}件）`,
+    })
     setDeletingId(null)
-    setTimeout(() => setDeleteStatus(null), 4000)
+    setTimeout(() => setDeleteStatus(null), 5000)
   }
 
   const filtered = users.filter(
@@ -364,14 +421,18 @@ function UsersTab() {
       {error && <p className="text-red-500 text-sm">エラー: {error}</p>}
       {loading && <p className="text-gray-400 text-sm">読み込み中...</p>}
 
-      {deleteStatus && (
-        <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${
-          deleteStatus.type === 'success'
-            ? 'bg-green-50 text-green-700 border border-green-200'
-            : 'bg-red-50 text-red-700 border border-red-200'
-        }`}>
-          {deleteStatus.type === 'success' ? '✓ ' : '⚠ '}{deleteStatus.msg}
+      {deleteStatus?.type === 'success' && (
+        <div className="rounded-xl px-4 py-2.5 text-sm font-medium bg-green-50 text-green-700 border border-green-200">
+          ✓ {deleteStatus.msg}
         </div>
+      )}
+      {deleteStatus?.type === 'error' && (
+        <div className="rounded-xl px-4 py-2.5 text-sm font-medium bg-red-50 text-red-700 border border-red-200">
+          ⚠ {deleteStatus.msg}
+        </div>
+      )}
+      {deleteStatus?.type === 'rls' && (
+        <RlsGuide />
       )}
 
       {!loading && (
