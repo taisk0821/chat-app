@@ -3,27 +3,45 @@ import { supabase } from '../supabaseClient'
 
 const UserContext = createContext(null)
 
+// INSERT を試みて重複キーエラー(23505)なら UPDATE に切り替える
+// upsert().select() の組み合わせによる問題を回避
 async function syncUserToDB(userData) {
-  // .select() を付けることで upsert のエラーが正確に返るようになる
-  const { data, error } = await supabase
-    .from('users')
-    .upsert(
-      {
-        id: userData.id,
-        nickname: userData.nickname,
-        bio: userData.bio || '',
-        hobbies: userData.hobbies || '',
-        last_seen_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
-    )
-    .select()
-
-  if (error) {
-    console.error('[chat] syncUserToDB 失敗:', error.code, error.message, error.details)
-    return { ok: false, error }
+  const payload = {
+    id: userData.id,
+    nickname: userData.nickname,
+    bio: userData.bio || '',
+    hobbies: userData.hobbies || '',
+    last_seen_at: new Date().toISOString(),
   }
-  console.log('[chat] syncUserToDB 成功:', data)
+
+  const { error: insertError } = await supabase.from('users').insert(payload)
+
+  if (insertError) {
+    if (insertError.code === '23505') {
+      // 重複 → UPDATE
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({
+          nickname: payload.nickname,
+          bio: payload.bio,
+          hobbies: payload.hobbies,
+          last_seen_at: payload.last_seen_at,
+        })
+        .eq('id', payload.id)
+
+      if (updateError) {
+        console.error('[DB] UPDATE失敗:', updateError)
+        return { ok: false, error: updateError }
+      }
+      console.log('[DB] UPDATE成功:', payload.nickname)
+      return { ok: true }
+    }
+
+    console.error('[DB] INSERT失敗:', insertError)
+    return { ok: false, error: insertError }
+  }
+
+  console.log('[DB] INSERT成功:', payload.nickname)
   return { ok: true }
 }
 
@@ -38,7 +56,8 @@ export function UserProvider({ children }) {
       if (saved) {
         const userData = JSON.parse(saved)
         const { ok, error } = await syncUserToDB(userData)
-        if (!ok) setDbError(error?.message || 'DB同期エラー')
+        if (!ok) setDbError(error?.message ?? 'DB同期エラー')
+        else setDbError(null)
         setUser(userData)
       }
       setInitializing(false)
@@ -54,14 +73,11 @@ export function UserProvider({ children }) {
     }
     const userData = { id, nickname, bio: bio || '', hobbies: hobbies || '', avatar_url: null }
     const { ok, error } = await syncUserToDB(userData)
-    if (!ok) {
-      console.error('[chat] login DB sync 失敗:', error)
-      setDbError(error?.message || 'DB同期エラー')
-    } else {
-      setDbError(null)
-    }
+    const errMsg = ok ? null : (error?.message ?? 'DB同期エラー')
+    setDbError(errMsg)
     localStorage.setItem('chat_user', JSON.stringify(userData))
     setUser(userData)
+    return { ok, errMsg }
   }
 
   const logout = () => {
@@ -73,7 +89,7 @@ export function UserProvider({ children }) {
   const updateProfile = async (bio, hobbies) => {
     if (!user) return
     const { error } = await supabase.from('users').update({ bio, hobbies }).eq('id', user.id)
-    if (error) { console.error('[chat] updateProfile 失敗:', error.message); return }
+    if (error) { console.error('[DB] updateProfile失敗:', error.message); return }
     const updated = { ...user, bio, hobbies }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
@@ -82,7 +98,7 @@ export function UserProvider({ children }) {
   const updateAvatar = async (avatarUrl) => {
     if (!user) return
     const { error } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', user.id)
-    if (error) { console.error('[chat] updateAvatar 失敗:', error.message); return }
+    if (error) { console.error('[DB] updateAvatar失敗:', error.message); return }
     const updated = { ...user, avatar_url: avatarUrl }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)

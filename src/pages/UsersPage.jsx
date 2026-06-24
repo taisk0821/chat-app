@@ -19,6 +19,68 @@ function Avatar({ u }) {
   )
 }
 
+// Supabase の状態を直接確認するパネル
+function DiagPanel({ user, onRetryRegister }) {
+  const [result, setResult] = useState(null)
+  const [running, setRunning] = useState(false)
+
+  const run = async () => {
+    setRunning(true)
+    const out = {}
+
+    // SELECT テスト
+    const { data: rows, error: selErr } = await supabase
+      .from('users').select('id, nickname, created_at').limit(10)
+    out.select = selErr
+      ? { error: `${selErr.code}: ${selErr.message}` }
+      : { count: rows.length, rows }
+
+    // INSERT テスト（現在ユーザー）
+    const { error: insErr } = await supabase.from('users').insert({
+      id: user.id,
+      nickname: user.nickname,
+      bio: user.bio || '',
+      hobbies: user.hobbies || '',
+      last_seen_at: new Date().toISOString(),
+    })
+    if (insErr?.code === '23505') {
+      out.insert = '既に存在（正常）'
+    } else if (insErr) {
+      out.insert = { error: `${insErr.code}: ${insErr.message}` }
+    } else {
+      out.insert = '新規登録成功'
+    }
+
+    setResult(out)
+    setRunning(false)
+    onRetryRegister()
+  }
+
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-semibold text-gray-600">🔍 DB診断</span>
+        <button
+          onClick={run}
+          disabled={running}
+          className="bg-gray-700 hover:bg-gray-800 disabled:bg-gray-400 text-white px-3 py-1 rounded-lg"
+        >
+          {running ? '診断中...' : '診断を実行'}
+        </button>
+      </div>
+      <div className="text-gray-500">
+        <p>ユーザーID: <span className="font-mono text-gray-700 break-all">{user.id}</span></p>
+        <p>ニックネーム: {user.nickname}</p>
+      </div>
+      {result && (
+        <pre className="bg-white border border-gray-200 rounded-lg p-2 overflow-auto max-h-48 text-gray-700">
+          {JSON.stringify(result, null, 2)}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 export default function UsersPage() {
   const { user, dbError } = useUser()
   const navigate = useNavigate()
@@ -34,15 +96,14 @@ export default function UsersPage() {
       .order('last_seen_at', { ascending: false })
 
     if (error) {
-      console.error('[chat] fetchUsers 失敗:', error.code, error.message)
+      console.error('[UsersPage] fetch失敗:', error)
       setFetchError(`${error.code}: ${error.message}`)
       setLoading(false)
       return
     }
 
-    console.log('[chat] fetchUsers 成功:', data?.length, '件')
     setFetchError(null)
-    setUsers(data || [])
+    setUsers(data ?? [])
     setLoading(false)
   }, [])
 
@@ -51,14 +112,14 @@ export default function UsersPage() {
 
     const channel = supabase
       .channel('realtime:users')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchUsers())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, fetchUsers)
       .subscribe()
 
     return () => supabase.removeChannel(channel)
   }, [fetchUsers])
 
-  // DBエラーバナー（Supabase接続・RLS等の問題を表示）
   const anyError = dbError || fetchError
+  const showDiag = anyError || (!loading && users.length === 0)
 
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-4 space-y-3">
@@ -73,22 +134,17 @@ export default function UsersPage() {
       </div>
 
       {anyError && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600 space-y-1">
-          <p className="font-semibold">⚠ Supabase エラー</p>
-          <p>{anyError}</p>
-          <p className="text-red-400">
-            usersテーブルが存在しない、またはRLSポリシーが未設定の可能性があります。
-            下記のSQLをSupabaseで実行してください。
-          </p>
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
+          <p className="font-semibold">⚠ エラー: {anyError}</p>
         </div>
       )}
 
       {loading && (
-        <p className="text-center text-gray-400 text-sm py-8">読み込み中...</p>
+        <p className="text-center text-gray-400 text-sm py-4">読み込み中...</p>
       )}
 
-      {!loading && !anyError && users.length === 0 && (
-        <p className="text-center text-gray-400 text-sm py-8">ユーザーがいません</p>
+      {!loading && users.length === 0 && !anyError && (
+        <p className="text-center text-gray-400 text-sm py-4">ユーザーがいません</p>
       )}
 
       {users.map((u) => (
@@ -122,6 +178,10 @@ export default function UsersPage() {
           )}
         </div>
       ))}
+
+      {showDiag && (
+        <DiagPanel user={user} onRetryRegister={fetchUsers} />
+      )}
     </div>
   )
 }

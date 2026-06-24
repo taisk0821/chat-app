@@ -9,12 +9,25 @@ export default function EnterPage() {
   const [bio, setBio] = useState('')
   const [hobbies, setHobbies] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!nickname.trim()) return
     setLoading(true)
-    await login(nickname.trim(), bio.trim(), hobbies.trim())
+    setError(null)
+
+    const { ok, errMsg } = await login(nickname.trim(), bio.trim(), hobbies.trim())
+
+    if (!ok) {
+      // DB保存に失敗してもローカルには保存済みなので画面遷移はするが警告を出す
+      setError(`DB保存エラー: ${errMsg}`)
+      setLoading(false)
+      // 3秒後に遷移
+      setTimeout(() => navigate('/chat'), 3000)
+      return
+    }
+
     navigate('/chat')
   }
 
@@ -26,6 +39,15 @@ export default function EnterPage() {
           <h1 className="text-2xl font-bold text-gray-800">匿名チャット</h1>
           <p className="text-gray-500 text-sm mt-1">プロフィールを入力して入室</p>
         </div>
+
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
+            <p className="font-semibold">⚠ エラーが発生しました</p>
+            <p className="mt-0.5">{error}</p>
+            <p className="mt-0.5 text-red-400">3秒後に自動的に画面を移動します...</p>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="text-xs font-medium text-gray-500">ニックネーム *</label>
@@ -66,7 +88,7 @@ export default function EnterPage() {
             disabled={!nickname.trim() || loading}
             className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white font-semibold rounded-xl py-3 transition mt-2"
           >
-            {loading ? '入室中...' : '入室する'}
+            {loading ? '登録中...' : '入室する'}
           </button>
         </form>
       </div>
