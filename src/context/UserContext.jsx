@@ -3,31 +3,42 @@ import { supabase } from '../supabaseClient'
 
 const UserContext = createContext(null)
 
-// Upsert the user's core profile to DB (no avatar_url — added separately via updateAvatar)
 async function syncUserToDB(userData) {
-  const { error } = await supabase.from('users').upsert({
-    id: userData.id,
-    nickname: userData.nickname,
-    bio: userData.bio || '',
-    hobbies: userData.hobbies || '',
-    last_seen_at: new Date().toISOString(),
-  })
-  if (error) console.error('[chat] DB sync failed:', error.message, error)
-  return !error
+  // .select() を付けることで upsert のエラーが正確に返るようになる
+  const { data, error } = await supabase
+    .from('users')
+    .upsert(
+      {
+        id: userData.id,
+        nickname: userData.nickname,
+        bio: userData.bio || '',
+        hobbies: userData.hobbies || '',
+        last_seen_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    )
+    .select()
+
+  if (error) {
+    console.error('[chat] syncUserToDB 失敗:', error.code, error.message, error.details)
+    return { ok: false, error }
+  }
+  console.log('[chat] syncUserToDB 成功:', data)
+  return { ok: true }
 }
 
 export function UserProvider({ children }) {
   const [user, setUser] = useState(null)
   const [initializing, setInitializing] = useState(true)
+  const [dbError, setDbError] = useState(null)
 
-  // On mount: restore session from localStorage and sync to DB before rendering
   useEffect(() => {
     const init = async () => {
       const saved = localStorage.getItem('chat_user')
       if (saved) {
         const userData = JSON.parse(saved)
-        // Sync to DB first — this ensures the user appears in UsersPage immediately
-        await syncUserToDB(userData)
+        const { ok, error } = await syncUserToDB(userData)
+        if (!ok) setDbError(error?.message || 'DB同期エラー')
         setUser(userData)
       }
       setInitializing(false)
@@ -42,7 +53,13 @@ export function UserProvider({ children }) {
       localStorage.setItem('chat_user_id', id)
     }
     const userData = { id, nickname, bio: bio || '', hobbies: hobbies || '', avatar_url: null }
-    await syncUserToDB(userData)
+    const { ok, error } = await syncUserToDB(userData)
+    if (!ok) {
+      console.error('[chat] login DB sync 失敗:', error)
+      setDbError(error?.message || 'DB同期エラー')
+    } else {
+      setDbError(null)
+    }
     localStorage.setItem('chat_user', JSON.stringify(userData))
     setUser(userData)
   }
@@ -50,12 +67,13 @@ export function UserProvider({ children }) {
   const logout = () => {
     localStorage.removeItem('chat_user')
     setUser(null)
+    setDbError(null)
   }
 
   const updateProfile = async (bio, hobbies) => {
     if (!user) return
     const { error } = await supabase.from('users').update({ bio, hobbies }).eq('id', user.id)
-    if (error) { console.error('[chat] updateProfile failed:', error.message); return }
+    if (error) { console.error('[chat] updateProfile 失敗:', error.message); return }
     const updated = { ...user, bio, hobbies }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
@@ -64,13 +82,13 @@ export function UserProvider({ children }) {
   const updateAvatar = async (avatarUrl) => {
     if (!user) return
     const { error } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', user.id)
-    if (error) { console.error('[chat] updateAvatar failed:', error.message); return }
+    if (error) { console.error('[chat] updateAvatar 失敗:', error.message); return }
     const updated = { ...user, avatar_url: avatarUrl }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
   }
 
-  // Heartbeat: just update last_seen_at every 30s (no upsert — avoids column mismatch issues)
+  // Heartbeat: last_seen_at を 30 秒ごとに更新
   useEffect(() => {
     if (!user) return
     const tick = () =>
@@ -88,7 +106,7 @@ export function UserProvider({ children }) {
   }
 
   return (
-    <UserContext.Provider value={{ user, login, logout, updateProfile, updateAvatar }}>
+    <UserContext.Provider value={{ user, login, logout, updateProfile, updateAvatar, dbError }}>
       {children}
     </UserContext.Provider>
   )

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
@@ -10,13 +10,7 @@ function isOnline(lastSeen) {
 
 function Avatar({ u }) {
   if (u.avatar_url) {
-    return (
-      <img
-        src={u.avatar_url}
-        alt={u.nickname}
-        className="w-10 h-10 rounded-full object-cover"
-      />
-    )
+    return <img src={u.avatar_url} alt={u.nickname} className="w-10 h-10 rounded-full object-cover" />
   }
   return (
     <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-sm">
@@ -26,34 +20,77 @@ function Avatar({ u }) {
 }
 
 export default function UsersPage() {
-  const { user } = useUser()
+  const { user, dbError } = useUser()
   const navigate = useNavigate()
   const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
+
+  const fetchUsers = useCallback(async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('last_seen_at', { ascending: false })
+
+    if (error) {
+      console.error('[chat] fetchUsers 失敗:', error.code, error.message)
+      setFetchError(`${error.code}: ${error.message}`)
+      setLoading(false)
+      return
+    }
+
+    console.log('[chat] fetchUsers 成功:', data?.length, '件')
+    setFetchError(null)
+    setUsers(data || [])
+    setLoading(false)
+  }, [])
 
   useEffect(() => {
-    const fetchUsers = async () => {
-      const { data } = await supabase
-        .from('users')
-        .select('*')
-        .order('last_seen_at', { ascending: false })
-      if (data) setUsers(data)
-    }
     fetchUsers()
 
     const channel = supabase
-      .channel('public:users')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, fetchUsers)
+      .channel('realtime:users')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => fetchUsers())
       .subscribe()
 
     return () => supabase.removeChannel(channel)
-  }, [])
+  }, [fetchUsers])
+
+  // DBエラーバナー（Supabase接続・RLS等の問題を表示）
+  const anyError = dbError || fetchError
 
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-4 space-y-3">
-      <p className="text-sm font-semibold text-gray-700">👥 ユーザー一覧</p>
-      {users.length === 0 && (
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-gray-700">👥 ユーザー一覧</p>
+        <button
+          onClick={fetchUsers}
+          className="text-xs text-indigo-500 hover:text-indigo-700 border border-indigo-200 rounded-lg px-2.5 py-1 transition"
+        >
+          再読み込み
+        </button>
+      </div>
+
+      {anyError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600 space-y-1">
+          <p className="font-semibold">⚠ Supabase エラー</p>
+          <p>{anyError}</p>
+          <p className="text-red-400">
+            usersテーブルが存在しない、またはRLSポリシーが未設定の可能性があります。
+            下記のSQLをSupabaseで実行してください。
+          </p>
+        </div>
+      )}
+
+      {loading && (
+        <p className="text-center text-gray-400 text-sm py-8">読み込み中...</p>
+      )}
+
+      {!loading && !anyError && users.length === 0 && (
         <p className="text-center text-gray-400 text-sm py-8">ユーザーがいません</p>
       )}
+
       {users.map((u) => (
         <div key={u.id} className="bg-white rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
