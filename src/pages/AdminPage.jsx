@@ -278,6 +278,8 @@ function UsersTab() {
   const [search, setSearch] = useState('')
   const [error, setError] = useState(null)
   const [selectedUser, setSelectedUser] = useState(null)
+  const [deletingId, setDeletingId] = useState(null)
+  const [deleteStatus, setDeleteStatus] = useState(null) // { type: 'success'|'error', msg }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -293,13 +295,47 @@ function UsersTab() {
   useEffect(() => { load() }, [load])
 
   const deleteUser = async (u) => {
-    await supabase.from('direct_messages').delete().eq('sender_id', u.id)
-    await supabase.from('direct_messages').delete().eq('receiver_id', u.id)
-    await supabase.from('messages').delete().eq('nickname', u.nickname)
-    const { error } = await supabase.from('users').delete().eq('id', u.id)
-    if (error) { alert(`削除失敗: ${error.message}`); return }
+    setDeletingId(u.id)
+    setDeleteStatus(null)
+
+    // Step 1: 送受信DM をまとめて削除
+    const { error: dmErr } = await supabase
+      .from('direct_messages')
+      .delete()
+      .or(`sender_id.eq.${u.id},receiver_id.eq.${u.id}`)
+    if (dmErr) {
+      setDeleteStatus({ type: 'error', msg: `DM削除失敗: ${dmErr.message}` })
+      setDeletingId(null)
+      return
+    }
+
+    // Step 2: グローバルチャットメッセージを削除
+    const { error: msgErr } = await supabase
+      .from('messages')
+      .delete()
+      .eq('nickname', u.nickname)
+    if (msgErr) {
+      setDeleteStatus({ type: 'error', msg: `チャットメッセージ削除失敗: ${msgErr.message}` })
+      setDeletingId(null)
+      return
+    }
+
+    // Step 3: ユーザー本体を削除
+    const { error: userErr } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', u.id)
+    if (userErr) {
+      setDeleteStatus({ type: 'error', msg: `ユーザー削除失敗: ${userErr.message}` })
+      setDeletingId(null)
+      return
+    }
+
     setUsers((prev) => prev.filter((x) => x.id !== u.id))
     if (selectedUser?.id === u.id) setSelectedUser(null)
+    setDeleteStatus({ type: 'success', msg: `「${u.nickname}」と関連データをすべて削除しました` })
+    setDeletingId(null)
+    setTimeout(() => setDeleteStatus(null), 4000)
   }
 
   const filtered = users.filter(
@@ -327,6 +363,16 @@ function UsersTab() {
 
       {error && <p className="text-red-500 text-sm">エラー: {error}</p>}
       {loading && <p className="text-gray-400 text-sm">読み込み中...</p>}
+
+      {deleteStatus && (
+        <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${
+          deleteStatus.type === 'success'
+            ? 'bg-green-50 text-green-700 border border-green-200'
+            : 'bg-red-50 text-red-700 border border-red-200'
+        }`}>
+          {deleteStatus.type === 'success' ? '✓ ' : '⚠ '}{deleteStatus.msg}
+        </div>
+      )}
 
       {!loading && (
         <>
@@ -377,7 +423,11 @@ function UsersTab() {
                       {formatDate(u.last_seen_at)}
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <DeleteButton onConfirm={() => deleteUser(u)} />
+                      {deletingId === u.id ? (
+                        <span className="text-xs text-gray-400 animate-pulse">削除中...</span>
+                      ) : (
+                        <DeleteButton onConfirm={() => deleteUser(u)} />
+                      )}
                     </td>
                   </tr>
                 ))}
