@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../supabaseClient'
 
 const ADMIN_PASS = import.meta.env.VITE_ADMIN_PASSWORD
@@ -34,9 +34,7 @@ function LoginForm({ onAuth }) {
           <div className="text-3xl mb-2">🔒</div>
           <h1 className="text-xl font-bold text-gray-800">管理者ログイン</h1>
         </div>
-        {error && (
-          <p className="text-red-500 text-sm text-center mb-4">{error}</p>
-        )}
+        {error && <p className="text-red-500 text-sm text-center mb-4">{error}</p>}
         <form onSubmit={handleSubmit} className="space-y-4">
           <input
             type="password"
@@ -59,24 +57,24 @@ function LoginForm({ onAuth }) {
   )
 }
 
-// ---- 削除ボタン（2段確認）----
-function DeleteButton({ onConfirm }) {
+// ---- 削除ボタン（2段確認） ----
+function DeleteButton({ onConfirm, onClick }) {
   const [confirming, setConfirming] = useState(false)
 
   if (confirming) {
     return (
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <button
-          onClick={() => { setConfirming(false); onConfirm() }}
+          onClick={(e) => { e.stopPropagation(); setConfirming(false); onConfirm() }}
           className="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded-lg"
         >
           削除
         </button>
         <button
-          onClick={() => setConfirming(false)}
+          onClick={(e) => { e.stopPropagation(); setConfirming(false) }}
           className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg border border-gray-200"
         >
-          キャンセル
+          戻る
         </button>
       </div>
     )
@@ -84,11 +82,192 @@ function DeleteButton({ onConfirm }) {
 
   return (
     <button
-      onClick={() => setConfirming(true)}
+      onClick={(e) => { e.stopPropagation(); setConfirming(true) }}
       className="text-xs text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 px-2 py-1 rounded-lg transition"
     >
       削除
     </button>
+  )
+}
+
+// ---- DM履歴モーダル ----
+function DMHistoryModal({ user, onClose }) {
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [partners, setPartners] = useState([])
+  const [partnerFilter, setPartnerFilter] = useState('all')
+  const bottomRef = useRef(null)
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true)
+
+      // 対象ユーザーが絡む全DMを時刻昇順で取得
+      const { data: msgs } = await supabase
+        .from('direct_messages')
+        .select('id, sender_id, receiver_id, content, created_at')
+        .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
+        .order('created_at', { ascending: true })
+        .limit(500)
+
+      if (!msgs || msgs.length === 0) { setLoading(false); return }
+
+      // 関係するユーザーIDを収集してニックネームを一括取得
+      const ids = [...new Set(msgs.flatMap((m) => [m.sender_id, m.receiver_id]))]
+      const { data: users } = await supabase
+        .from('users').select('id, nickname').in('id', ids)
+      const nameMap = Object.fromEntries((users ?? []).map((u) => [u.id, u.nickname]))
+
+      const enriched = msgs.map((m) => ({
+        ...m,
+        senderName: nameMap[m.sender_id] ?? '不明',
+        receiverName: nameMap[m.receiver_id] ?? '不明',
+      }))
+
+      // 会話相手一覧（重複なし・送受信件数付き）
+      const partnerCount = {}
+      for (const m of msgs) {
+        const pid = m.sender_id === user.id ? m.receiver_id : m.sender_id
+        partnerCount[pid] = (partnerCount[pid] || 0) + 1
+      }
+      setPartners(
+        Object.entries(partnerCount).map(([id, count]) => ({
+          id,
+          name: nameMap[id] ?? '不明',
+          count,
+        }))
+      )
+
+      setMessages(enriched)
+      setLoading(false)
+    }
+    load()
+  }, [user.id])
+
+  // メッセージ末尾に自動スクロール
+  useEffect(() => {
+    if (!loading) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [loading, partnerFilter])
+
+  const filtered =
+    partnerFilter === 'all'
+      ? messages
+      : messages.filter(
+          (m) => m.sender_id === partnerFilter || m.receiver_id === partnerFilter
+        )
+
+  const deleteDM = async (id) => {
+    const { error } = await supabase.from('direct_messages').delete().eq('id', id)
+    if (error) { alert(`削除失敗: ${error.message}`); return }
+    setMessages((prev) => prev.filter((m) => m.id !== id))
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl w-full max-w-2xl max-h-[88vh] flex flex-col shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ヘッダー */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-gray-100 shrink-0">
+          <div>
+            <h2 className="font-bold text-gray-800 text-base">
+              {user.nickname} のDM履歴
+            </h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {loading ? '読み込み中...' : `全 ${messages.length} 件`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition text-xl leading-none shrink-0 ml-2"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* 会話相手フィルター */}
+        {!loading && partners.length > 0 && (
+          <div className="px-4 py-2.5 border-b border-gray-100 flex gap-2 overflow-x-auto shrink-0">
+            <button
+              onClick={() => setPartnerFilter('all')}
+              className={`text-xs px-3 py-1 rounded-full whitespace-nowrap transition shrink-0 ${
+                partnerFilter === 'all'
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              すべて（{messages.length}件）
+            </button>
+            {partners.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setPartnerFilter(p.id)}
+                className={`text-xs px-3 py-1 rounded-full whitespace-nowrap transition shrink-0 ${
+                  partnerFilter === p.id
+                    ? 'bg-indigo-500 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {p.name}（{p.count}件）
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* メッセージ一覧 */}
+        <div className="overflow-y-auto flex-1 p-4 space-y-2.5">
+          {loading && (
+            <p className="text-gray-400 text-sm text-center py-10">読み込み中...</p>
+          )}
+          {!loading && filtered.length === 0 && (
+            <p className="text-gray-400 text-sm text-center py-10">DMがありません</p>
+          )}
+
+          {filtered.map((m) => {
+            const isFromUser = m.sender_id === user.id
+            return (
+              <div
+                key={m.id}
+                className={`flex flex-col group ${isFromUser ? 'items-end' : 'items-start'}`}
+              >
+                {/* 送信者→受信者ラベル */}
+                <p className="text-[10px] text-gray-400 mb-0.5 px-1">
+                  <span className="font-medium text-gray-600">{m.senderName}</span>
+                  <span className="mx-1">→</span>
+                  <span className="font-medium text-gray-600">{m.receiverName}</span>
+                  <span className="mx-1.5 text-gray-300">·</span>
+                  {formatDate(m.created_at)}
+                </p>
+
+                <div className={`flex items-end gap-1.5 ${isFromUser ? 'flex-row-reverse' : 'flex-row'}`}>
+                  {/* メッセージバブル */}
+                  <div
+                    className={`max-w-[72%] px-3.5 py-2 rounded-2xl text-sm break-words leading-relaxed ${
+                      isFromUser
+                        ? 'bg-indigo-500 text-white rounded-tr-sm'
+                        : 'bg-gray-100 text-gray-800 rounded-tl-sm'
+                    }`}
+                  >
+                    {m.content}
+                  </div>
+
+                  {/* 削除ボタン（ホバー時に表示） */}
+                  <div className="opacity-0 group-hover:opacity-100 transition">
+                    <DeleteButton onConfirm={() => deleteDM(m.id)} />
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+
+          <div ref={bottomRef} />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -98,6 +277,7 @@ function UsersTab() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [error, setError] = useState(null)
+  const [selectedUser, setSelectedUser] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -113,13 +293,13 @@ function UsersTab() {
   useEffect(() => { load() }, [load])
 
   const deleteUser = async (u) => {
-    // 関連DM削除 → グローバルメッセージ削除（ニックネーム一致） → ユーザー削除
     await supabase.from('direct_messages').delete().eq('sender_id', u.id)
     await supabase.from('direct_messages').delete().eq('receiver_id', u.id)
     await supabase.from('messages').delete().eq('nickname', u.nickname)
     const { error } = await supabase.from('users').delete().eq('id', u.id)
     if (error) { alert(`削除失敗: ${error.message}`); return }
     setUsers((prev) => prev.filter((x) => x.id !== u.id))
+    if (selectedUser?.id === u.id) setSelectedUser(null)
   }
 
   const filtered = users.filter(
@@ -136,7 +316,10 @@ function UsersTab() {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300 transition"
         />
-        <button onClick={load} className="text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-2 transition">
+        <button
+          onClick={load}
+          className="text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-2 transition"
+        >
           更新
         </button>
         <span className="text-sm text-gray-400 shrink-0">{filtered.length} 人</span>
@@ -146,52 +329,75 @@ function UsersTab() {
       {loading && <p className="text-gray-400 text-sm">読み込み中...</p>}
 
       {!loading && (
-        <div className="overflow-x-auto rounded-xl border border-gray-200">
-          <table className="w-full text-sm min-w-[600px]">
-            <thead className="bg-gray-50 text-xs text-gray-500">
-              <tr>
-                <th className="px-4 py-3 text-left">ユーザー</th>
-                <th className="px-4 py-3 text-left">自己紹介</th>
-                <th className="px-4 py-3 text-left">登録日時</th>
-                <th className="px-4 py-3 text-left">最終ログイン</th>
-                <th className="px-4 py-3 text-left">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filtered.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50 transition">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      {u.avatar_url ? (
-                        <img src={u.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
-                      ) : (
-                        <div className="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-xs shrink-0">
-                          {u.nickname[0].toUpperCase()}
-                        </div>
-                      )}
-                      <span className="font-medium text-gray-800 whitespace-nowrap">{u.nickname}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 max-w-[160px] truncate">
-                    {u.bio || '—'}
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                    {formatDate(u.created_at)}
-                  </td>
-                  <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                    {formatDate(u.last_seen_at)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <DeleteButton onConfirm={() => deleteUser(u)} />
-                  </td>
+        <>
+          <p className="text-xs text-gray-400">行をクリックするとDM履歴を確認できます</p>
+          <div className="overflow-x-auto rounded-xl border border-gray-200">
+            <table className="w-full text-sm min-w-[620px]">
+              <thead className="bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="px-4 py-3 text-left">ユーザー</th>
+                  <th className="px-4 py-3 text-left">自己紹介</th>
+                  <th className="px-4 py-3 text-left">登録日時</th>
+                  <th className="px-4 py-3 text-left">最終ログイン</th>
+                  <th className="px-4 py-3 text-left">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {filtered.length === 0 && !loading && (
-            <p className="text-center text-gray-400 text-sm py-8">ユーザーが見つかりません</p>
-          )}
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filtered.map((u) => (
+                  <tr
+                    key={u.id}
+                    onClick={() => setSelectedUser(u)}
+                    className="hover:bg-indigo-50 cursor-pointer transition"
+                  >
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {u.avatar_url ? (
+                          <img
+                            src={u.avatar_url}
+                            alt=""
+                            className="w-7 h-7 rounded-full object-cover shrink-0"
+                          />
+                        ) : (
+                          <div className="w-7 h-7 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-xs shrink-0">
+                            {u.nickname[0].toUpperCase()}
+                          </div>
+                        )}
+                        <span className="font-medium text-gray-800 whitespace-nowrap">
+                          {u.nickname}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 max-w-[150px] truncate">
+                      {u.bio || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                      {formatDate(u.created_at)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                      {formatDate(u.last_seen_at)}
+                    </td>
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <DeleteButton onConfirm={() => deleteUser(u)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length === 0 && (
+              <p className="text-center text-gray-400 text-sm py-8">
+                ユーザーが見つかりません
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* DM履歴モーダル */}
+      {selectedUser && (
+        <DMHistoryModal
+          user={selectedUser}
+          onClose={() => setSelectedUser(null)}
+        />
       )}
     </div>
   )
@@ -241,7 +447,10 @@ function MessagesTab() {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300 transition"
         />
-        <button onClick={load} className="text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-2 transition">
+        <button
+          onClick={load}
+          className="text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-2 transition"
+        >
           更新
         </button>
         <span className="text-sm text-gray-400 shrink-0">{filtered.length} 件</span>
@@ -264,9 +473,11 @@ function MessagesTab() {
             <tbody className="divide-y divide-gray-100">
               {filtered.map((m) => (
                 <tr key={m.id} className="hover:bg-gray-50 transition">
-                  <td className="px-4 py-3 font-medium text-gray-700 whitespace-nowrap">{m.nickname}</td>
+                  <td className="px-4 py-3 font-medium text-gray-700 whitespace-nowrap">
+                    {m.nickname}
+                  </td>
                   <td className="px-4 py-3 text-gray-600 max-w-[240px]">
-                    <span className="line-clamp-2 break-all">{m.content}</span>
+                    <span className="break-all line-clamp-2">{m.content}</span>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
                     {formatDate(m.created_at)}
@@ -278,8 +489,10 @@ function MessagesTab() {
               ))}
             </tbody>
           </table>
-          {filtered.length === 0 && !loading && (
-            <p className="text-center text-gray-400 text-sm py-8">メッセージが見つかりません</p>
+          {filtered.length === 0 && (
+            <p className="text-center text-gray-400 text-sm py-8">
+              メッセージが見つかりません
+            </p>
           )}
         </div>
       )}
@@ -312,7 +525,6 @@ function AdminDashboard({ onLogout }) {
       </header>
 
       <div className="max-w-5xl mx-auto px-4 py-6">
-        {/* タブ切り替え */}
         <div className="flex gap-2 mb-6">
           {TABS.map((t) => (
             <button
