@@ -8,6 +8,23 @@ function isOnline(lastSeen) {
   return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000
 }
 
+function Avatar({ u }) {
+  if (u.avatar_url) {
+    return (
+      <img
+        src={u.avatar_url}
+        alt={u.nickname}
+        className="w-10 h-10 rounded-full object-cover"
+      />
+    )
+  }
+  return (
+    <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-sm">
+      {u.nickname[0].toUpperCase()}
+    </div>
+  )
+}
+
 export default function UsersPage() {
   const { user } = useUser()
   const navigate = useNavigate()
@@ -41,9 +58,7 @@ export default function UsersPage() {
         <div key={u.id} className="bg-white rounded-2xl p-4 shadow-sm flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="relative shrink-0">
-              <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold">
-                {u.nickname[0].toUpperCase()}
-              </div>
+              <Avatar u={u} />
               {isOnline(u.last_seen_at) && (
                 <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-400 rounded-full border-2 border-white" />
               )}
@@ -58,8 +73,6 @@ export default function UsersPage() {
                   <span className="text-xs text-green-500">オンライン</span>
                 )}
               </div>
-              {u.bio && <p className="text-xs text-gray-500 mt-0.5 truncate">{u.bio}</p>}
-              {u.hobbies && <p className="text-xs text-gray-400 mt-0.5 truncate">趣味: {u.hobbies}</p>}
             </div>
           </div>
           {u.id !== user.id && (

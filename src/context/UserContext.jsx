@@ -15,12 +15,13 @@ export function UserProvider({ children }) {
       id = crypto.randomUUID()
       localStorage.setItem('chat_user_id', id)
     }
-    const userData = { id, nickname, bio: bio || '', hobbies: hobbies || '' }
+    const userData = { id, nickname, bio: bio || '', hobbies: hobbies || '', avatar_url: null }
     await supabase.from('users').upsert({
       id,
       nickname,
       bio: bio || '',
       hobbies: hobbies || '',
+      avatar_url: null,
       last_seen_at: new Date().toISOString(),
     })
     localStorage.setItem('chat_user', JSON.stringify(userData))
@@ -40,18 +41,33 @@ export function UserProvider({ children }) {
     setUser(updated)
   }
 
-  // Heartbeat: update last_seen_at every 30s
+  const updateAvatar = async (avatarUrl) => {
+    if (!user) return
+    await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', user.id)
+    const updated = { ...user, avatar_url: avatarUrl }
+    localStorage.setItem('chat_user', JSON.stringify(updated))
+    setUser(updated)
+  }
+
+  // Heartbeat: upsert every 30s to keep last_seen_at fresh and ensure user exists in DB
   useEffect(() => {
     if (!user) return
     const tick = () =>
-      supabase.from('users').update({ last_seen_at: new Date().toISOString() }).eq('id', user.id)
+      supabase.from('users').upsert({
+        id: user.id,
+        nickname: user.nickname,
+        bio: user.bio || '',
+        hobbies: user.hobbies || '',
+        avatar_url: user.avatar_url || null,
+        last_seen_at: new Date().toISOString(),
+      })
     tick()
-    const id = setInterval(tick, 30000)
-    return () => clearInterval(id)
+    const intervalId = setInterval(tick, 30000)
+    return () => clearInterval(intervalId)
   }, [user?.id])
 
   return (
-    <UserContext.Provider value={{ user, login, logout, updateProfile }}>
+    <UserContext.Provider value={{ user, login, logout, updateProfile, updateAvatar }}>
       {children}
     </UserContext.Provider>
   )
