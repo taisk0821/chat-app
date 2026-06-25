@@ -1,8 +1,13 @@
-import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useUser } from '../context/UserContext'
 import { useDM } from '../context/DMContext'
-import { usePushNotifications, isPushSupported, isIOS, isStandalone } from '../hooks/usePushNotifications'
+import {
+  usePushNotifications,
+  usePushBannerDismissed,
+  isPushSupported,
+  isIOS,
+  isStandalone,
+} from '../hooks/usePushNotifications'
 
 export default function Layout({ children }) {
   const { user, logout } = useUser()
@@ -10,8 +15,8 @@ export default function Layout({ children }) {
   const location = useLocation()
   const navigate = useNavigate()
 
-  const { permission, subscribed, loading, subscribe } = usePushNotifications(user?.id)
-  const [bannerDismissed, setBannerDismissed] = useState(false)
+  const { permission, subscribed, loading, errorMsg, subscribe } = usePushNotifications(user?.id)
+  const [bannerDismissed, dismissBanner] = usePushBannerDismissed()
 
   const isActive = (to) => {
     if (to === '/talks') return location.pathname === '/talks' || location.pathname.startsWith('/dm/')
@@ -42,8 +47,10 @@ export default function Layout({ children }) {
     { to: '/profile', label: 'マイページ', icon: '👤' },
   ]
 
-  // バナーを表示するか判定
-  const showIOSGuide = isIOS() && !isStandalone() && !bannerDismissed && isPushSupported()
+  // iOS でホーム画面未追加の場合にガイドを表示
+  const showIOSGuide = isIOS() && !isStandalone() && !bannerDismissed
+
+  // 通知許可バナーを表示するか（iOS ガイドより優先度低）
   const showPermissionBanner =
     !showIOSGuide &&
     !bannerDismissed &&
@@ -51,6 +58,9 @@ export default function Layout({ children }) {
     permission !== 'granted' &&
     permission !== 'denied' &&
     isPushSupported()
+
+  // 通知が拒否されているときの案内
+  const showDeniedNote = !bannerDismissed && permission === 'denied' && isPushSupported()
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 flex flex-col">
@@ -92,12 +102,13 @@ export default function Layout({ children }) {
           <div className="text-xs leading-relaxed">
             <p className="font-semibold">📲 iPhoneでプッシュ通知を受け取るには</p>
             <p className="text-indigo-200 mt-0.5">
-              Safari の共有ボタン →「ホーム画面に追加」してアプリを起動してください
+              Safari の共有ボタン →「ホーム画面に追加」してアプリを起動してください（iOS 16.4 以降）
             </p>
           </div>
           <button
-            onClick={() => setBannerDismissed(true)}
-            className="text-indigo-300 hover:text-white shrink-0 text-lg leading-none mt-0.5"
+            onClick={dismissBanner}
+            className="text-indigo-300 hover:text-white shrink-0 text-xl leading-none mt-0.5"
+            aria-label="閉じる"
           >
             ×
           </button>
@@ -107,22 +118,50 @@ export default function Layout({ children }) {
       {/* 通知許可バナー */}
       {showPermissionBanner && (
         <div className="bg-indigo-600 text-white px-4 py-2.5 flex items-center justify-between gap-3">
-          <span className="text-xs">🔔 DMが届いたときにプッシュ通知を受け取りますか？</span>
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">🔔 DMプッシュ通知</p>
+            {errorMsg ? (
+              <p className="text-xs text-red-300 mt-0.5">{errorMsg}</p>
+            ) : (
+              <p className="text-xs text-indigo-200 mt-0.5">
+                アプリを閉じていてもDMが届いたら通知します
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={subscribe}
               disabled={loading}
-              className="bg-white text-indigo-700 text-xs font-semibold px-3 py-1 rounded-lg disabled:opacity-60 transition"
+              className="bg-white text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-lg disabled:opacity-60 transition whitespace-nowrap"
             >
               {loading ? '設定中...' : '許可する'}
             </button>
             <button
-              onClick={() => setBannerDismissed(true)}
-              className="text-indigo-300 hover:text-white text-lg leading-none"
+              onClick={dismissBanner}
+              className="text-indigo-300 hover:text-white text-xl leading-none"
+              aria-label="閉じる"
             >
               ×
             </button>
           </div>
+        </div>
+      )}
+
+      {/* 通知許可済みバナー（一瞬表示してすぐ消える） */}
+      {subscribed && permission === 'granted' && !bannerDismissed && (
+        <div className="bg-green-500 text-white px-4 py-2 flex items-center justify-between gap-3">
+          <p className="text-xs">通知が有効になりました</p>
+          <button onClick={dismissBanner} className="text-green-100 hover:text-white text-xl leading-none">×</button>
+        </div>
+      )}
+
+      {/* 通知ブロック案内 */}
+      {showDeniedNote && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between gap-3">
+          <p className="text-xs text-amber-700">
+            通知がブロックされています。ブラウザのアドレスバー左の🔒から許可に変更してください。
+          </p>
+          <button onClick={dismissBanner} className="text-amber-400 hover:text-amber-700 text-xl leading-none shrink-0">×</button>
         </div>
       )}
 

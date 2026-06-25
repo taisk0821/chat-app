@@ -1,24 +1,39 @@
 {
+  "id": "/",
   "name": "匿名チャット",
   "short_name": "チャット",
-  "description": "匿名でリアルタイムチャット＆DM",
+  "description": "匿名でリアルタイムチャット & DM",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f0f4ff",
   "theme_color": "#6366f1",
   "orientation": "portrait-primary",
+  "categories": ["social", "communication"],
   "icons": [
     {
       "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }
