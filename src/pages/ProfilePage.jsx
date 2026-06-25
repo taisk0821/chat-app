@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useUser } from '../context/UserContext'
 import { supabase } from '../supabaseClient'
 
+// ---- アバターアップロード ----
 function AvatarUpload({ user, onUploaded }) {
   const fileRef = useRef(null)
   const [uploading, setUploading] = useState(false)
@@ -11,42 +12,24 @@ function AvatarUpload({ user, onUploaded }) {
   const handleFileChange = async (e) => {
     const file = e.target.files[0]
     if (!file) return
-    if (!file.type.startsWith('image/')) {
-      setError('画像ファイルを選択してください')
-      return
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setError('5MB以下の画像を選択してください')
-      return
-    }
+    if (!file.type.startsWith('image/')) { setError('画像ファイルを選択してください'); return }
+    if (file.size > 5 * 1024 * 1024) { setError('5MB以下の画像を選択してください'); return }
     setError('')
     setUploading(true)
-
     const ext = file.name.split('.').pop().toLowerCase()
     const path = `${user.id}.${ext}`
-
     const { error: uploadError } = await supabase.storage
-      .from('avatars')
-      .upload(path, file, { upsert: true, contentType: file.type })
-
-    if (uploadError) {
-      setError('アップロードに失敗しました')
-      setUploading(false)
-      return
-    }
-
+      .from('avatars').upload(path, file, { upsert: true, contentType: file.type })
+    if (uploadError) { setError('アップロードに失敗しました'); setUploading(false); return }
     const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-    const url = `${data.publicUrl}?t=${Date.now()}`
-    await onUploaded(url)
+    await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
     setUploading(false)
   }
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <div
-        onClick={() => !uploading && fileRef.current?.click()}
-        className="relative w-24 h-24 rounded-full overflow-hidden cursor-pointer group"
-      >
+      <div onClick={() => !uploading && fileRef.current?.click()}
+        className="relative w-24 h-24 rounded-full overflow-hidden cursor-pointer group">
         {user.avatar_url ? (
           <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
         ) : (
@@ -55,20 +38,51 @@ function AvatarUpload({ user, onUploaded }) {
           </div>
         )}
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center rounded-full">
-          <span className="text-white text-xs font-medium">
-            {uploading ? '...' : '変更'}
-          </span>
+          <span className="text-white text-xs font-medium">{uploading ? '...' : '変更'}</span>
         </div>
       </div>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={handleFileChange}
-      />
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
       <p className="text-xs text-gray-400">クリックして写真を変更（5MB以下）</p>
       {error && <p className="text-xs text-red-500">{error}</p>}
+    </div>
+  )
+}
+
+// ---- RLS未設定時に表示するSQL案内 ----
+const DELETE_SQL = `-- Supabase SQL Editor で実行してください
+create policy "allow_delete_users"
+  on public.users for delete using (true);
+
+create policy "allow_delete_messages"
+  on public.messages for delete using (true);
+
+create policy "allow_delete_direct_messages"
+  on public.direct_messages for delete using (true);`
+
+function RlsErrorGuide() {
+  const [copied, setCopied] = useState(false)
+  const copy = () => {
+    navigator.clipboard.writeText(DELETE_SQL)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2 text-left">
+      <p className="text-xs font-semibold text-amber-800">
+        ⚠ Supabase の DELETE ポリシーが未設定です
+      </p>
+      <p className="text-xs text-amber-700">
+        Supabase ダッシュボード → <strong>SQL Editor</strong> で以下を実行後、再度お試しください。
+      </p>
+      <div className="relative">
+        <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-3 overflow-x-auto leading-relaxed whitespace-pre-wrap">
+{DELETE_SQL}
+        </pre>
+        <button onClick={copy}
+          className="absolute top-1.5 right-1.5 text-[10px] bg-gray-700 hover:bg-gray-600 text-white px-2 py-0.5 rounded transition">
+          {copied ? '✓ コピー済' : 'コピー'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -78,6 +92,7 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
   const [input, setInput] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState(null)
+  const [rlsBlocked, setRlsBlocked] = useState(false)
 
   const confirmed = input === user.nickname
 
@@ -85,52 +100,50 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
     if (!confirmed) return
     setDeleting(true)
     setError(null)
+    setRlsBlocked(false)
 
-    // Step 1: DM削除（送受信まとめて）
+    // Step 1: DM削除
     const { data: deletedDMs, error: dmErr } = await supabase
       .from('direct_messages')
       .delete()
       .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
       .select('id')
     if (dmErr) {
-      setError(`DM削除に失敗しました: ${dmErr.message}`)
-      setDeleting(false)
-      return
+      setError(`DM削除エラー: ${dmErr.message}`)
+      setDeleting(false); return
     }
 
-    // Step 2: グローバルチャットメッセージ削除
-    const { error: msgErr } = await supabase
+    // Step 2: チャットメッセージ削除
+    const { data: deletedMsgs, error: msgErr } = await supabase
       .from('messages')
       .delete()
       .eq('nickname', user.nickname)
       .select('id')
     if (msgErr) {
-      setError(`メッセージ削除に失敗しました: ${msgErr.message}`)
-      setDeleting(false)
-      return
+      setError(`メッセージ削除エラー: ${msgErr.message}`)
+      setDeleting(false); return
     }
 
-    // Step 3: ユーザー削除（削除できたか件数で確認）
+    // Step 3: ユーザー削除 — .select('id') で実際に削除されたか確認
     const { data: deletedUser, error: userErr } = await supabase
       .from('users')
       .delete()
       .eq('id', user.id)
       .select('id')
     if (userErr) {
-      setError(`アカウント削除に失敗しました: ${userErr.message}`)
-      setDeleting(false)
-      return
-    }
-    if (!deletedUser || deletedUser.length === 0) {
-      setError('削除できませんでした。しばらく待ってから再試行してください。')
-      setDeleting(false)
-      return
+      setError(`アカウント削除エラー: ${userErr.message}`)
+      setDeleting(false); return
     }
 
-    // Step 4: ストレージのアバター削除（失敗しても続行）
-    const exts = ['jpg', 'jpeg', 'png', 'webp', 'gif']
+    // 0件 = RLS が DELETE をブロックしている
+    if (!deletedUser || deletedUser.length === 0) {
+      setRlsBlocked(true)
+      setDeleting(false); return
+    }
+
+    // Step 4: アバター画像を削除（失敗しても続行）
     await Promise.allSettled(
-      exts.map((ext) =>
+      ['jpg', 'jpeg', 'png', 'webp', 'gif'].map((ext) =>
         supabase.storage.from('avatars').remove([`${user.id}.${ext}`])
       )
     )
@@ -139,22 +152,16 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
   }
 
   return (
-    <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-5"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-5"
+        onClick={(e) => e.stopPropagation()}>
         <div className="text-center">
           <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3">
             <span className="text-2xl">🗑</span>
           </div>
           <h2 className="text-lg font-bold text-gray-800">アカウントを削除しますか？</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            この操作は取り消せません。以下のデータが全て削除されます。
-          </p>
+          <p className="text-sm text-gray-500 mt-1">この操作は取り消せません。</p>
         </div>
 
         <ul className="text-xs text-gray-600 bg-gray-50 rounded-xl px-4 py-3 space-y-1">
@@ -181,19 +188,16 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
           <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">⚠ {error}</p>
         )}
 
+        {/* RLS未設定ガイド */}
+        {rlsBlocked && <RlsErrorGuide />}
+
         <div className="flex gap-2">
-          <button
-            onClick={onClose}
-            disabled={deleting}
-            className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-xl py-2.5 text-sm font-medium transition"
-          >
+          <button onClick={onClose} disabled={deleting}
+            className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-xl py-2.5 text-sm font-medium transition">
             キャンセル
           </button>
-          <button
-            onClick={handleDelete}
-            disabled={!confirmed || deleting}
-            className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-red-200 text-white rounded-xl py-2.5 text-sm font-semibold transition"
-          >
+          <button onClick={handleDelete} disabled={!confirmed || deleting}
+            className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-red-200 text-white rounded-xl py-2.5 text-sm font-semibold transition">
             {deleting ? '削除中...' : '削除する'}
           </button>
         </div>
@@ -222,7 +226,23 @@ export default function ProfilePage() {
   }
 
   const handleDeleted = () => {
+    const userId = user.id
+
+    // DM既読スタンプを全消去
+    const keysToRemove = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key && key.startsWith(`dm_read_${userId}_`)) keysToRemove.push(key)
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k))
+
+    // UUID も消去 → 次回ログイン時に新しいIDを発行する
+    localStorage.removeItem('chat_user_id')
+
+    // chat_user を消去してReact stateをリセット
     logout()
+
+    // プロフィール入力画面（EnterPage）へ
     navigate('/')
   }
 
@@ -262,25 +282,19 @@ export default function ProfilePage() {
               className="w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
             />
           </div>
-          <button
-            type="submit"
-            disabled={saving}
+          <button type="submit" disabled={saving}
             className={`w-full font-semibold rounded-xl py-2.5 transition ${
-              saved
-                ? 'bg-green-500 text-white'
-                : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
-            }`}
-          >
+              saved ? 'bg-green-500 text-white'
+                    : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
+            }`}>
             {saving ? '保存中...' : saved ? '✓ 保存しました' : '保存する'}
           </button>
         </form>
 
         {/* アカウント削除 */}
         <div className="pt-4 border-t border-gray-100">
-          <button
-            onClick={() => setShowDeleteModal(true)}
-            className="w-full text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 hover:bg-red-50 rounded-xl py-2.5 font-medium transition"
-          >
+          <button onClick={() => setShowDeleteModal(true)}
+            className="w-full text-sm text-red-400 hover:text-red-600 border border-red-200 hover:border-red-400 hover:bg-red-50 rounded-xl py-2.5 font-medium transition">
             アカウントを削除する
           </button>
         </div>
