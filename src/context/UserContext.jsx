@@ -3,8 +3,32 @@ import { supabase } from '../supabaseClient'
 
 const UserContext = createContext(null)
 
-// INSERT を試みて重複キーエラー(23505)なら UPDATE に切り替える
-// upsert().select() の組み合わせによる問題を回避
+// UUIDがSupabaseのusersテーブルに存在するか確認
+async function userExistsInDB(id) {
+  const { data } = await supabase
+    .from('users')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle()
+  return !!data
+}
+
+// 全ユーザー関連localStorageキーを消去
+function clearAllUserStorage(userId) {
+  // dm_read プレフィックスのキーを収集
+  const keysToRemove = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key && (userId ? key.startsWith(`dm_read_${userId}_`) : key.startsWith('dm_read_'))) {
+      keysToRemove.push(key)
+    }
+  }
+  keysToRemove.forEach((k) => localStorage.removeItem(k))
+  localStorage.removeItem('chat_user')
+  localStorage.removeItem('chat_user_id')
+}
+
+// INSERT → 23505(重複) → UPDATE のフォールバック
 async function syncUserToDB(userData) {
   const payload = {
     id: userData.id,
@@ -18,7 +42,6 @@ async function syncUserToDB(userData) {
 
   if (insertError) {
     if (insertError.code === '23505') {
-      // 重複 → UPDATE
       const { error: updateError } = await supabase
         .from('users')
         .update({
@@ -55,6 +78,16 @@ export function UserProvider({ children }) {
       const saved = localStorage.getItem('chat_user')
       if (saved) {
         const userData = JSON.parse(saved)
+
+        // DBに存在するか確認（管理者削除・アカウント削除後の復活を防ぐ）
+        const exists = await userExistsInDB(userData.id)
+        if (!exists) {
+          console.log('[init] UUIDがDBに存在しないため強制ログアウト:', userData.id)
+          clearAllUserStorage(userData.id)
+          setInitializing(false)
+          return
+        }
+
         const { ok, error } = await syncUserToDB(userData)
         if (!ok) setDbError(error?.message ?? 'DB同期エラー')
         else setDbError(null)
@@ -67,10 +100,20 @@ export function UserProvider({ children }) {
 
   const login = async (nickname, bio, hobbies) => {
     let id = localStorage.getItem('chat_user_id')
-    if (!id) {
+
+    if (id) {
+      // UUIDがDBに存在するか確認（削除済みIDの再利用を防ぐ）
+      const exists = await userExistsInDB(id)
+      if (!exists) {
+        console.log('[login] 削除済みUUIDのため新規発行:', id)
+        id = crypto.randomUUID()
+        localStorage.setItem('chat_user_id', id)
+      }
+    } else {
       id = crypto.randomUUID()
       localStorage.setItem('chat_user_id', id)
     }
+
     const userData = { id, nickname, bio: bio || '', hobbies: hobbies || '', avatar_url: null }
     const { ok, error } = await syncUserToDB(userData)
     const errMsg = ok ? null : (error?.message ?? 'DB同期エラー')
@@ -80,8 +123,16 @@ export function UserProvider({ children }) {
     return { ok, errMsg }
   }
 
+  // 通常ログアウト: chat_user のみ消去（UUID は保持して再ログイン可能にする）
   const logout = () => {
     localStorage.removeItem('chat_user')
+    setUser(null)
+    setDbError(null)
+  }
+
+  // アカウント削除完了後に呼ぶ: UUID を含む全データを消去
+  const clearAccountStorage = (userId) => {
+    clearAllUserStorage(userId)
     setUser(null)
     setDbError(null)
   }
@@ -122,7 +173,7 @@ export function UserProvider({ children }) {
   }
 
   return (
-    <UserContext.Provider value={{ user, login, logout, updateProfile, updateAvatar, dbError }}>
+    <UserContext.Provider value={{ user, login, logout, clearAccountStorage, updateProfile, updateAvatar, dbError }}>
       {children}
     </UserContext.Provider>
   )

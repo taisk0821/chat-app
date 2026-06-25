@@ -208,7 +208,7 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
 
 // ---- プロフィール編集ページ ----
 export default function ProfilePage() {
-  const { user, updateProfile, updateAvatar, logout } = useUser()
+  const { user, updateProfile, updateAvatar, clearAccountStorage } = useUser()
   const navigate = useNavigate()
   const [bio, setBio] = useState(user?.bio || '')
   const [hobbies, setHobbies] = useState(user?.hobbies || '')
@@ -226,23 +226,8 @@ export default function ProfilePage() {
   }
 
   const handleDeleted = () => {
-    const userId = user.id
-
-    // DM既読スタンプを全消去
-    const keysToRemove = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key && key.startsWith(`dm_read_${userId}_`)) keysToRemove.push(key)
-    }
-    keysToRemove.forEach((k) => localStorage.removeItem(k))
-
-    // UUID も消去 → 次回ログイン時に新しいIDを発行する
-    localStorage.removeItem('chat_user_id')
-
-    // chat_user を消去してReact stateをリセット
-    logout()
-
-    // プロフィール入力画面（EnterPage）へ
+    // chat_user / chat_user_id / dm_read_* を全消去してReact stateもリセット
+    clearAccountStorage(user.id)
     navigate('/')
   }
 
