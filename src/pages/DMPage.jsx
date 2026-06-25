@@ -102,7 +102,7 @@ export default function DMPage() {
   }
 
   return (
-    <div className="flex-1 flex flex-col max-w-lg mx-auto w-full px-4 pb-4" style={{ height: 'calc(100vh - 57px)' }}>
+    <div className="flex-1 flex flex-col max-w-lg mx-auto w-full px-4 pb-4" style={{ height: 'calc(100dvh - 52px - 56px - env(safe-area-inset-bottom, 0px))' }}>
       <div className="flex-1 flex flex-col bg-white rounded-2xl shadow-lg overflow-hidden mt-4">
         {/* Header */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100">
