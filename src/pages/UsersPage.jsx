@@ -152,6 +152,9 @@ function UserCard({ u, me, onNavigate }) {
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-gray-800 text-sm">{u.nickname}</span>
+            {u.is_private && (
+              <span className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">🔒</span>
+            )}
             {u.id === me.id && (
               <span className="text-[10px] text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">あなた</span>
             )}
@@ -175,10 +178,14 @@ function UserCard({ u, me, onNavigate }) {
       </button>
       {u.id !== me.id && (
         <button
-          onClick={() => navigate(`/dm/${u.id}`)}
-          className="shrink-0 text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-xl transition"
+          onClick={() => u.is_private ? navigate(`/profile/${u.id}`) : navigate(`/dm/${u.id}`)}
+          className={`shrink-0 text-xs px-3 py-1.5 rounded-xl transition font-medium ${
+            u.is_private
+              ? 'border border-gray-300 text-gray-600 hover:bg-gray-50'
+              : 'bg-indigo-500 hover:bg-indigo-600 text-white'
+          }`}
         >
-          話しかける
+          {u.is_private ? '🔒 申請する' : '話しかける'}
         </button>
       )}
     </div>

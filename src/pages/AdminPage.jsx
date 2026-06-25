@@ -611,13 +611,154 @@ function MessagesTab() {
   )
 }
 
+// ---- 通報管理タブ ----
+const REASON_LABEL = {
+  spam:          'スパム',
+  inappropriate: '不適切な内容',
+  harassment:    '嫌がらせ',
+  other:         'その他',
+}
+const STATUS_LABEL = {
+  pending:   { text: '未対応', cls: 'bg-yellow-100 text-yellow-700' },
+  reviewed:  { text: '確認済', cls: 'bg-blue-100 text-blue-700' },
+  dismissed: { text: '却下',   cls: 'bg-gray-100 text-gray-500' },
+}
+
+function ReportsTab() {
+  const [reports, setReports] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter]   = useState('pending')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    const q = supabase
+      .from('reports')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(200)
+    const { data } = filter !== 'all' ? await q.eq('status', filter) : await q
+    setReports(data ?? [])
+    setLoading(false)
+  }, [filter])
+
+  useEffect(() => { load() }, [load])
+
+  const updateStatus = async (id, status) => {
+    await supabase.from('reports').update({ status }).eq('id', id)
+    setReports((prev) => prev.map((r) => r.id === id ? { ...r, status } : r))
+  }
+
+  const deleteReport = async (id) => {
+    await supabase.from('reports').delete().eq('id', id)
+    setReports((prev) => prev.filter((r) => r.id !== id))
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* フィルター */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {['pending', 'reviewed', 'dismissed', 'all'].map((s) => (
+          <button
+            key={s}
+            onClick={() => setFilter(s)}
+            className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+              filter === s ? 'bg-gray-800 text-white' : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            {s === 'all' ? 'すべて' : STATUS_LABEL[s]?.text}
+          </button>
+        ))}
+        <button onClick={load} className="ml-auto text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded-lg px-3 py-1.5 transition">
+          更新
+        </button>
+        <span className="text-sm text-gray-400">{reports.length} 件</span>
+      </div>
+
+      {loading && <p className="text-gray-400 text-sm">読み込み中...</p>}
+      {!loading && reports.length === 0 && (
+        <p className="text-center text-gray-400 text-sm py-8">通報はありません</p>
+      )}
+
+      {!loading && reports.length > 0 && (
+        <div className="space-y-3">
+          {reports.map((r) => (
+            <div key={r.id} className="bg-gray-50 rounded-xl border border-gray-200 p-4 space-y-2">
+              {/* ヘッダー行 */}
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${STATUS_LABEL[r.status]?.cls}`}>
+                      {STATUS_LABEL[r.status]?.text}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {r.target_type === 'user' ? '👤 ユーザー' : '💬 メッセージ'}
+                    </span>
+                    <span className="text-xs font-semibold text-red-500">{REASON_LABEL[r.reason]}</span>
+                  </div>
+                  <p className="text-xs text-gray-400">{formatDate(r.created_at)}</p>
+                </div>
+                <DeleteButton onConfirm={() => deleteReport(r.id)} />
+              </div>
+
+              {/* 通報対象 */}
+              <div className="bg-white rounded-lg px-3 py-2 border border-gray-100 text-sm space-y-0.5">
+                <p className="text-xs text-gray-500">通報対象: <span className="font-semibold text-gray-700">{r.target_nickname ?? r.target_id}</span></p>
+                {r.target_content && (
+                  <p className="text-xs text-gray-600 line-clamp-2">「{r.target_content}」</p>
+                )}
+              </div>
+
+              {/* 通報者 + 詳細 */}
+              <p className="text-xs text-gray-400">通報者: {r.reporter_nickname}</p>
+              {r.detail && (
+                <p className="text-xs text-gray-600 bg-yellow-50 border border-yellow-100 rounded-lg px-3 py-2">
+                  詳細: {r.detail}
+                </p>
+              )}
+
+              {/* ステータス変更ボタン */}
+              <div className="flex gap-2 pt-1">
+                {r.status !== 'reviewed' && (
+                  <button
+                    onClick={() => updateStatus(r.id, 'reviewed')}
+                    className="text-xs bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-lg transition"
+                  >
+                    確認済みにする
+                  </button>
+                )}
+                {r.status !== 'dismissed' && (
+                  <button
+                    onClick={() => updateStatus(r.id, 'dismissed')}
+                    className="text-xs border border-gray-200 text-gray-500 hover:bg-gray-100 px-3 py-1 rounded-lg transition"
+                  >
+                    却下
+                  </button>
+                )}
+                {r.status !== 'pending' && (
+                  <button
+                    onClick={() => updateStatus(r.id, 'pending')}
+                    className="text-xs border border-yellow-200 text-yellow-600 hover:bg-yellow-50 px-3 py-1 rounded-lg transition"
+                  >
+                    未対応に戻す
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ---- 管理ダッシュボード ----
 function AdminDashboard({ onLogout }) {
   const [tab, setTab] = useState('users')
 
   const TABS = [
-    { key: 'users', label: '👥 ユーザー管理' },
+    { key: 'users',    label: '👥 ユーザー管理' },
     { key: 'messages', label: '💬 チャット管理' },
+    { key: 'reports',  label: '🚨 通報管理' },
   ]
 
   return (
@@ -655,6 +796,7 @@ function AdminDashboard({ onLogout }) {
         <div className="bg-white rounded-2xl shadow-sm p-6">
           {tab === 'users' && <UsersTab />}
           {tab === 'messages' && <MessagesTab />}
+          {tab === 'reports' && <ReportsTab />}
         </div>
       </div>
     </div>

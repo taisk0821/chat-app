@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
+import ReportModal from '../components/ReportModal'
 
 function isOnline(lastSeen) {
   if (!lastSeen) return false
@@ -12,18 +13,52 @@ export default function UserProfilePage() {
   const { userId } = useParams()
   const { user } = useUser()
   const navigate = useNavigate()
-  const [profile, setProfile] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [profile, setProfile]             = useState(null)
+  const [loading, setLoading]             = useState(true)
+  const [requestStatus, setRequestStatus] = useState(null) // null|'none'|'pending'|'accepted'|'rejected'
+  const [requestLoading, setRequestLoading] = useState(false)
+  const [reportOpen, setReportOpen]       = useState(false)
 
   useEffect(() => {
-    const fetch = async () => {
+    const fetchProfile = async () => {
       const { data } = await supabase.from('users').select('*').eq('id', userId).single()
-      if (!data) navigate('/users')
-      else setProfile(data)
+      if (!data) { navigate('/users'); return }
+      setProfile(data)
       setLoading(false)
     }
-    fetch()
+    fetchProfile()
   }, [userId, navigate])
+
+  // 鍵アカウントの場合、DM申請状態を確認
+  useEffect(() => {
+    if (!profile || profile.id === user.id || !profile.is_private) return
+    supabase
+      .from('dm_requests')
+      .select('status')
+      .eq('sender_id', user.id)
+      .eq('receiver_id', profile.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        setRequestStatus(data?.status ?? 'none')
+      })
+  }, [profile, user.id])
+
+  const sendDMRequest = async () => {
+    if (!profile) return
+    setRequestLoading(true)
+    // upsert で「却下後の再申請」も対応（status を pending に戻す）
+    await supabase.from('dm_requests').upsert(
+      {
+        sender_id: user.id,
+        sender_nickname: user.nickname,
+        receiver_id: profile.id,
+        status: 'pending',
+      },
+      { onConflict: 'sender_id,receiver_id' }
+    )
+    setRequestStatus('pending')
+    setRequestLoading(false)
+  }
 
   if (loading) {
     return (
@@ -38,6 +73,70 @@ export default function UserProfilePage() {
   const online = isOnline(profile.last_seen_at)
   const isMe = profile.id === user.id
 
+  // DM ボタンの内容を決定
+  const renderDMButton = () => {
+    if (isMe) {
+      return (
+        <button
+          onClick={() => navigate('/profile')}
+          className="w-full border border-indigo-300 text-indigo-600 hover:bg-indigo-50 font-semibold rounded-xl py-2.5 text-sm transition"
+        >
+          プロフィールを編集
+        </button>
+      )
+    }
+    if (!profile.is_private) {
+      return (
+        <button
+          onClick={() => navigate(`/dm/${profile.id}`)}
+          className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl py-2.5 text-sm transition"
+        >
+          💬 話しかける
+        </button>
+      )
+    }
+    // 鍵アカウント — ステータス別ボタン
+    if (requestStatus === null) return null
+    if (requestStatus === 'accepted') {
+      return (
+        <button
+          onClick={() => navigate(`/dm/${profile.id}`)}
+          className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl py-2.5 text-sm transition"
+        >
+          💬 話しかける
+        </button>
+      )
+    }
+    if (requestStatus === 'pending') {
+      return (
+        <button disabled className="w-full bg-gray-100 text-gray-400 font-semibold rounded-xl py-2.5 text-sm cursor-not-allowed">
+          🕐 申請済み（承認待ち）
+        </button>
+      )
+    }
+    if (requestStatus === 'rejected') {
+      return (
+        <button
+          onClick={sendDMRequest}
+          disabled={requestLoading}
+          className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-orange-200 text-white font-semibold rounded-xl py-2.5 text-sm transition"
+        >
+          {requestLoading ? '送信中...' : '🔒 再申請する'}
+        </button>
+      )
+    }
+    // 'none' — 未申請
+    return (
+      <button
+        onClick={sendDMRequest}
+        disabled={requestLoading}
+        className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white font-semibold rounded-xl py-2.5 text-sm transition"
+      >
+        {requestLoading ? '送信中...' : '🔒 DMの申請を送る'}
+      </button>
+    )
+  }
+
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-4">
       <button
@@ -48,7 +147,6 @@ export default function UserProfilePage() {
       </button>
 
       <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
-        {/* ヘッダー背景 */}
         <div className="h-20 bg-gradient-to-r from-indigo-400 to-purple-400" />
 
         <div className="px-6 pb-6">
@@ -70,9 +168,12 @@ export default function UserProfilePage() {
             )}
           </div>
 
-          {/* 名前・ステータス */}
+          {/* 名前・バッジ */}
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <h1 className="text-xl font-bold text-gray-800">{profile.nickname}</h1>
+            {profile.is_private && (
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">🔒 鍵</span>
+            )}
             {isMe && (
               <span className="text-xs text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">あなた</span>
             )}
@@ -81,40 +182,41 @@ export default function UserProfilePage() {
             {online ? '🟢 オンライン' : '⚫ オフライン'}
           </p>
 
-          {/* 自己紹介 */}
-          {profile.bio ? (
+          {profile.bio && (
             <div className="mb-3">
               <p className="text-xs font-semibold text-gray-500 mb-1">自己紹介</p>
               <p className="text-sm text-gray-700 whitespace-pre-wrap">{profile.bio}</p>
             </div>
-          ) : null}
-
-          {/* 趣味 */}
-          {profile.hobbies ? (
+          )}
+          {profile.hobbies && (
             <div className="mb-5">
               <p className="text-xs font-semibold text-gray-500 mb-1">趣味</p>
               <p className="text-sm text-gray-700">{profile.hobbies}</p>
             </div>
-          ) : null}
-
-          {/* ボタン */}
-          {isMe ? (
-            <button
-              onClick={() => navigate('/profile')}
-              className="w-full border border-indigo-300 text-indigo-600 hover:bg-indigo-50 font-semibold rounded-xl py-2.5 text-sm transition"
-            >
-              プロフィールを編集
-            </button>
-          ) : (
-            <button
-              onClick={() => navigate(`/dm/${profile.id}`)}
-              className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl py-2.5 text-sm transition"
-            >
-              💬 話しかける
-            </button>
           )}
+
+          <div className="space-y-2.5">
+            {renderDMButton()}
+            {!isMe && (
+              <button
+                onClick={() => setReportOpen(true)}
+                className="w-full border border-red-200 text-red-400 hover:text-red-600 hover:border-red-400 hover:bg-red-50 font-medium rounded-xl py-2 text-sm transition"
+              >
+                通報する
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {reportOpen && (
+        <ReportModal
+          targetType="user"
+          targetId={profile.id}
+          targetNickname={profile.nickname}
+          onClose={() => setReportOpen(false)}
+        />
+      )}
     </div>
   )
 }

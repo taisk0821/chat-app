@@ -4,6 +4,80 @@ import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
 import { useDM } from '../context/DMContext'
 
+// ---- DM申請セクション ----
+function DMRequestsSection({ userId }) {
+  const navigate = useNavigate()
+  const [requests, setRequests] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const fetchRequests = useCallback(async () => {
+    const { data } = await supabase
+      .from('dm_requests')
+      .select('*')
+      .eq('receiver_id', userId)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+    setRequests(data ?? [])
+    setLoading(false)
+  }, [userId])
+
+  useEffect(() => {
+    fetchRequests()
+    const ch = supabase
+      .channel('dm_requests_talks')
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'dm_requests',
+        filter: `receiver_id=eq.${userId}`,
+      }, fetchRequests)
+      .subscribe()
+    return () => supabase.removeChannel(ch)
+  }, [fetchRequests, userId])
+
+  const respond = async (requestId, senderId, status) => {
+    await supabase.from('dm_requests').update({ status }).eq('id', requestId)
+    setRequests((prev) => prev.filter((r) => r.id !== requestId))
+    if (status === 'accepted') navigate(`/dm/${senderId}`)
+  }
+
+  if (loading || requests.length === 0) return null
+
+  return (
+    <div>
+      <p className="text-sm font-semibold text-gray-700 mb-2">
+        🔒 DM申請
+        <span className="ml-1.5 text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5">{requests.length}</span>
+      </p>
+      <div className="space-y-2 mb-4">
+        {requests.map((req) => (
+          <div key={req.id} className="bg-white rounded-2xl px-4 py-3 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-800 truncate">{req.sender_nickname}</p>
+                <p className="text-xs text-gray-400 mt-0.5">DMの申請が届いています</p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={() => respond(req.id, req.sender_id, 'accepted')}
+                  className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-xl transition font-medium"
+                >
+                  承認
+                </button>
+                <button
+                  onClick={() => respond(req.id, req.sender_id, 'rejected')}
+                  className="text-xs border border-gray-200 text-gray-500 hover:bg-gray-50 px-3 py-1.5 rounded-xl transition"
+                >
+                  拒否
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-gray-200 mb-4" />
+    </div>
+  )
+}
+
 function formatTime(isoString) {
   const d = new Date(isoString)
   const now = new Date()
@@ -87,6 +161,8 @@ export default function TalksPage() {
 
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-4 space-y-2">
+      {/* DM申請セクション（鍵アカウント向け） */}
+      <DMRequestsSection userId={user.id} />
       <p className="text-sm font-semibold text-gray-700">📨 トーク一覧</p>
 
       {loading && <p className="text-center text-gray-400 text-sm py-8">読み込み中...</p>}

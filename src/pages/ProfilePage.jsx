@@ -171,6 +171,7 @@ export default function ProfilePage() {
   const [age, setAge]             = useState(user?.age ?? '')
   const [gender, setGender]       = useState(user?.gender ?? '')
   const [prefecture, setPrefecture] = useState(user?.prefecture ?? '')
+  const [isPrivate, setIsPrivate] = useState(user?.is_private ?? false)
   const [saving, setSaving]       = useState(false)
   const [saved, setSaved]         = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -179,7 +180,7 @@ export default function ProfilePage() {
     e.preventDefault()
     if (age !== '' && (Number(age) < 0 || Number(age) > 120)) return
     setSaving(true)
-    await updateProfile(bio.trim(), hobbies.trim(), age, gender, prefecture)
+    await updateProfile(bio.trim(), hobbies.trim(), age, gender, prefecture, isPrivate)
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
@@ -253,6 +254,29 @@ export default function ProfilePage() {
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
+          </div>
+
+          {/* 鍵アカウント */}
+          <div className="flex items-center justify-between rounded-xl border border-gray-200 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-gray-700">🔒 鍵アカウント</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                ONにすると、DMを送るには申請が必要になります
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsPrivate((v) => !v)}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none ${
+                isPrivate ? 'bg-indigo-500' : 'bg-gray-200'
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform transition-transform duration-200 ${
+                  isPrivate ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
           </div>
 
           <button type="submit" disabled={saving}

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
+import ReportModal from '../components/ReportModal'
 
 function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -10,11 +11,11 @@ function formatTime(isoString) {
 export default function GlobalChatPage() {
   const { user } = useUser()
   const navigate = useNavigate()
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
-  // nickname → user.id のマッピング（クリック時の遷移先に使用）
+  const [messages, setMessages]         = useState([])
+  const [input, setInput]               = useState('')
+  const [sending, setSending]           = useState(false)
   const [nicknameToId, setNicknameToId] = useState({})
+  const [reporting, setReporting]       = useState(null) // 通報対象メッセージ
   const bottomRef = useRef(null)
 
   useEffect(() => {
@@ -60,7 +61,6 @@ export default function GlobalChatPage() {
           return next
         })
       })
-  // nicknameToId は deps に含めると無限ループになるため意図的に除外
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages])
 
@@ -68,7 +68,6 @@ export default function GlobalChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // 名前クリック → プロフィールへ遷移
   const handleNicknameClick = (nickname) => {
     if (nickname === user.nickname) {
       navigate('/profile')
@@ -106,7 +105,7 @@ export default function GlobalChatPage() {
             const isMe = msg.nickname === user.nickname
             return (
               <div key={msg.id} className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}>
-                <div className={`flex items-end gap-2 w-full ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                <div className={`flex items-end gap-1.5 w-full ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                   <div className={`max-w-[75%] rounded-2xl px-4 py-2 text-sm break-words ${
                     isMe ? 'bg-indigo-500 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'
                   }`}>
@@ -129,6 +128,19 @@ export default function GlobalChatPage() {
                     )}
                     <p>{msg.content}</p>
                   </div>
+
+                  {/* 通報ボタン（他人のメッセージのみ） */}
+                  {!isMe && (
+                    <button
+                      onClick={() => setReporting(msg)}
+                      title="通報する"
+                      className="shrink-0 text-gray-300 hover:text-red-400 transition mb-1"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                        <path d="M3.5 2.75a.75.75 0 00-1.5 0v14.5a.75.75 0 001.5 0v-4.392l1.657-.348a6.449 6.449 0 014.271.572 7.948 7.948 0 005.965.524l2.078-.64A.75.75 0 0018 12.25v-8.5a.75.75 0 00-.904-.734l-2.38.501a7.25 7.25 0 01-4.186-.363l-.502-.2a8.75 8.75 0 00-5.053-.439l-1.475.31V2.75z" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
                 <span className="text-xs text-gray-400 mt-0.5 px-1">{formatTime(msg.created_at)}</span>
               </div>
@@ -155,6 +167,17 @@ export default function GlobalChatPage() {
           </button>
         </form>
       </div>
+
+      {/* 通報モーダル */}
+      {reporting && (
+        <ReportModal
+          targetType="message"
+          targetId={reporting.id}
+          targetNickname={reporting.nickname}
+          targetContent={reporting.content}
+          onClose={() => setReporting(null)}
+        />
+      )}
     </div>
   )
 }

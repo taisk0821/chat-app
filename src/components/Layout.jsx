@@ -1,6 +1,8 @@
+import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useUser } from '../context/UserContext'
 import { useDM } from '../context/DMContext'
+import { supabase } from '../supabaseClient'
 import {
   usePushNotifications,
   usePushBannerDismissed,
@@ -68,6 +70,41 @@ export default function Layout({ children }) {
   const { totalUnread, notification, setNotification } = useDM()
   const location = useLocation()
   const navigate = useNavigate()
+
+  // DM申請のバッジ数 + トースト通知
+  const [pendingRequests, setPendingRequests] = useState(0)
+  const [requestNotif, setRequestNotif] = useState(null) // { senderNickname }
+
+  useEffect(() => {
+    if (!user?.id) return
+    const fetchCount = () =>
+      supabase
+        .from('dm_requests')
+        .select('id', { count: 'exact', head: true })
+        .eq('receiver_id', user.id)
+        .eq('status', 'pending')
+        .then(({ count }) => setPendingRequests(count ?? 0))
+
+    fetchCount()
+
+    const ch = supabase
+      .channel('layout_dm_requests')
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'dm_requests',
+        filter: `receiver_id=eq.${user.id}`,
+      }, (payload) => {
+        setPendingRequests((n) => n + 1)
+        setRequestNotif({ senderNickname: payload.new.sender_nickname })
+        setTimeout(() => setRequestNotif(null), 5000)
+      })
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public', table: 'dm_requests',
+        filter: `receiver_id=eq.${user.id}`,
+      }, fetchCount)
+      .subscribe()
+
+    return () => supabase.removeChannel(ch)
+  }, [user?.id])
 
   const { permission, subscribed, loading, errorMsg, subscribe } = usePushNotifications(user?.id)
   const [bannerDismissed, dismissBanner] = usePushBannerDismissed()
@@ -181,6 +218,25 @@ export default function Layout({ children }) {
         </div>
       )}
 
+      {/* ── DM申請トースト ── */}
+      {requestNotif && location.pathname !== '/talks' && (
+        <div
+          onClick={() => { navigate('/talks'); setRequestNotif(null) }}
+          style={{ bottom: `calc(${TAB_H}px + env(safe-area-inset-bottom, 0px) + 12px)` }}
+          className="fixed left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-sm bg-gray-900 text-white rounded-2xl px-4 py-3 shadow-xl cursor-pointer flex items-center gap-3 z-50"
+        >
+          <div className="w-9 h-9 bg-indigo-500 rounded-full flex items-center justify-center font-bold text-sm shrink-0">
+            🔒
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold">{requestNotif.senderNickname} からDM申請</p>
+            <p className="text-xs text-gray-300 mt-0.5">タップして確認する</p>
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); setRequestNotif(null) }}
+            className="text-gray-400 hover:text-white shrink-0 text-lg leading-none">×</button>
+        </div>
+      )}
+
       {/* ── ボトムタブバー ── */}
       <nav
         className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur border-t border-gray-100 z-20 shadow-[0_-1px_8px_rgba(0,0,0,0.06)]"
@@ -189,8 +245,9 @@ export default function Layout({ children }) {
         <div className="flex items-stretch justify-around" style={{ height: `${TAB_H}px` }}>
           {TABS.map(({ to, label, icon: Icon }) => {
             const active = isActive(to)
-            const badge = to === '/talks' && totalUnread > 0
-              ? (totalUnread > 9 ? '9+' : String(totalUnread))
+            const talksBadge = totalUnread + (to === '/talks' ? pendingRequests : 0)
+            const badge = to === '/talks' && talksBadge > 0
+              ? (talksBadge > 9 ? '9+' : String(talksBadge))
               : null
 
             return (

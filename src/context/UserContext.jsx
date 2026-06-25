@@ -100,6 +100,7 @@ export function UserProvider({ children }) {
           age: dbUser.age ?? null,
           gender: dbUser.gender ?? null,
           prefecture: dbUser.prefecture ?? null,
+          is_private: dbUser.is_private ?? false,
           avatar_url: dbUser.avatar_url ?? userData.avatar_url ?? null,
         }
         localStorage.setItem('chat_user', JSON.stringify(merged))
@@ -152,7 +153,7 @@ export function UserProvider({ children }) {
     setDbError(null)
   }
 
-  const updateProfile = async (bio, hobbies, age, gender, prefecture) => {
+  const updateProfile = async (bio, hobbies, age, gender, prefecture, isPrivate = false) => {
     if (!user) return
     const patch = {
       bio,
@@ -160,6 +161,7 @@ export function UserProvider({ children }) {
       age: age !== '' && age !== null && age !== undefined ? Number(age) : null,
       gender: gender || null,
       prefecture: prefecture || null,
+      is_private: isPrivate === true,
     }
     const { error } = await supabase.from('users').update(patch).eq('id', user.id)
     if (error) { console.error('[DB] updateProfile失敗:', error.message); return }
