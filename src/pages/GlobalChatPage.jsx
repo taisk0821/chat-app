@@ -15,8 +15,20 @@ export default function GlobalChatPage() {
   const [input, setInput]               = useState('')
   const [sending, setSending]           = useState(false)
   const [nicknameToId, setNicknameToId] = useState({})
+  const [followingIds, setFollowingIds] = useState(new Set())
   const [reporting, setReporting]       = useState(null) // 通報対象メッセージ
   const bottomRef = useRef(null)
+
+  // フォロー中ユーザーIDセットを取得
+  useEffect(() => {
+    supabase
+      .from('follows')
+      .select('following_id')
+      .eq('follower_id', user.id)
+      .then(({ data }) => {
+        setFollowingIds(new Set((data ?? []).map((f) => f.following_id)))
+      })
+  }, [user.id])
 
   useEffect(() => {
     const fetchMessages = async () => {
@@ -103,6 +115,8 @@ export default function GlobalChatPage() {
           )}
           {messages.map((msg) => {
             const isMe = msg.nickname === user.nickname
+            const msgUserId = nicknameToId[msg.nickname]
+            const isFollowed = !isMe && msgUserId && followingIds.has(msgUserId)
             return (
               <div key={msg.id} className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}>
                 <div className={`flex items-end gap-1.5 w-full ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -111,12 +125,21 @@ export default function GlobalChatPage() {
                   }`}>
                     {/* 投稿者名 — クリックでプロフィールへ */}
                     {!isMe && (
-                      <button
-                        onClick={() => handleNicknameClick(msg.nickname)}
-                        className="text-xs font-semibold text-indigo-500 mb-0.5 hover:underline text-left"
-                      >
-                        {msg.nickname}
-                      </button>
+                      <div className="flex items-center gap-1 mb-0.5">
+                        <button
+                          onClick={() => handleNicknameClick(msg.nickname)}
+                          className={`text-xs font-semibold hover:underline text-left ${
+                            isFollowed ? 'text-indigo-600' : 'text-indigo-500'
+                          }`}
+                        >
+                          {msg.nickname}
+                        </button>
+                        {isFollowed && (
+                          <span className="text-[9px] bg-indigo-100 text-indigo-600 px-1 py-0.5 rounded-full leading-none font-medium">
+                            フォロー中
+                          </span>
+                        )}
+                      </div>
                     )}
                     {isMe && (
                       <button

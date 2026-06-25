@@ -9,6 +9,7 @@ import UsersPage from './pages/UsersPage'
 import DMPage from './pages/DMPage'
 import ProfilePage from './pages/ProfilePage'
 import UserProfilePage from './pages/UserProfilePage'
+import FollowListPage from './pages/FollowListPage'
 import AdminPage from './pages/AdminPage'
 
 function PrivateRoute({ children }) {
@@ -33,6 +34,7 @@ function ChatApp() {
           <Route path="/users" element={<PrivateRoute><Layout><UsersPage /></Layout></PrivateRoute>} />
           <Route path="/profile" element={<PrivateRoute><Layout><ProfilePage /></Layout></PrivateRoute>} />
           <Route path="/profile/:userId" element={<PrivateRoute><Layout><UserProfilePage /></Layout></PrivateRoute>} />
+          <Route path="/follows/:userId/:type" element={<PrivateRoute><Layout><FollowListPage /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>
       </DMProvider>

@@ -18,6 +18,11 @@ export default function UserProfilePage() {
   const [requestStatus, setRequestStatus] = useState(null) // null|'none'|'pending'|'accepted'|'rejected'
   const [requestLoading, setRequestLoading] = useState(false)
   const [reportOpen, setReportOpen]       = useState(false)
+  // フォロー
+  const [isFollowing, setIsFollowing]       = useState(false)
+  const [followersCount, setFollowersCount] = useState(0)
+  const [followingCount, setFollowingCount] = useState(0)
+  const [followLoading, setFollowLoading]   = useState(false)
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -28,6 +33,39 @@ export default function UserProfilePage() {
     }
     fetchProfile()
   }, [userId, navigate])
+
+  // フォロー数・フォロワー数・自分のフォロー状態を取得
+  useEffect(() => {
+    if (!profile) return
+    Promise.all([
+      supabase.from('follows').select('id', { count: 'exact', head: true }).eq('following_id', profile.id),
+      supabase.from('follows').select('id', { count: 'exact', head: true }).eq('follower_id', profile.id),
+      profile.id !== user.id
+        ? supabase.from('follows').select('id', { count: 'exact', head: true })
+            .eq('follower_id', user.id).eq('following_id', profile.id)
+        : Promise.resolve({ count: 0 }),
+    ]).then(([followers, following, selfFollow]) => {
+      setFollowersCount(followers.count ?? 0)
+      setFollowingCount(following.count ?? 0)
+      setIsFollowing((selfFollow.count ?? 0) > 0)
+    })
+  }, [profile?.id, user.id])
+
+  const toggleFollow = async () => {
+    if (!profile || followLoading) return
+    setFollowLoading(true)
+    if (isFollowing) {
+      await supabase.from('follows').delete()
+        .eq('follower_id', user.id).eq('following_id', profile.id)
+      setIsFollowing(false)
+      setFollowersCount((n) => Math.max(0, n - 1))
+    } else {
+      await supabase.from('follows').insert({ follower_id: user.id, following_id: profile.id })
+      setIsFollowing(true)
+      setFollowersCount((n) => n + 1)
+    }
+    setFollowLoading(false)
+  }
 
   // 鍵アカウントの場合、DM申請状態を確認
   useEffect(() => {
@@ -178,9 +216,27 @@ export default function UserProfilePage() {
               <span className="text-xs text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">あなた</span>
             )}
           </div>
-          <p className="text-xs text-gray-400 mb-4">
+          <p className="text-xs text-gray-400 mb-3">
             {online ? '🟢 オンライン' : '⚫ オフライン'}
           </p>
+
+          {/* フォロー数・フォロワー数 */}
+          <div className="flex gap-5 mb-4">
+            <button
+              onClick={() => navigate(`/follows/${profile.id}/followers`)}
+              className="text-center hover:opacity-70 transition"
+            >
+              <p className="font-bold text-gray-800 text-sm">{followersCount}</p>
+              <p className="text-xs text-gray-500">フォロワー</p>
+            </button>
+            <button
+              onClick={() => navigate(`/follows/${profile.id}/following`)}
+              className="text-center hover:opacity-70 transition"
+            >
+              <p className="font-bold text-gray-800 text-sm">{followingCount}</p>
+              <p className="text-xs text-gray-500">フォロー中</p>
+            </button>
+          </div>
 
           {profile.bio && (
             <div className="mb-3">
@@ -196,6 +252,20 @@ export default function UserProfilePage() {
           )}
 
           <div className="space-y-2.5">
+            {/* フォローボタン（自分以外） */}
+            {!isMe && (
+              <button
+                onClick={toggleFollow}
+                disabled={followLoading}
+                className={`w-full font-semibold rounded-xl py-2.5 text-sm transition ${
+                  isFollowing
+                    ? 'border border-gray-300 text-gray-600 hover:bg-gray-50'
+                    : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
+                }`}
+              >
+                {followLoading ? '...' : isFollowing ? '✓ フォロー中' : 'フォローする'}
+              </button>
+            )}
             {renderDMButton()}
             {!isMe && (
               <button

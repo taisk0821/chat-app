@@ -14,10 +14,11 @@ export default function DMPage() {
   const { user } = useUser()
   const { markRead } = useDM()
   const navigate = useNavigate()
-  const [partner, setPartner] = useState(null)
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
+  const [partner, setPartner]     = useState(null)
+  const [messages, setMessages]   = useState([])
+  const [input, setInput]         = useState('')
+  const [sending, setSending]     = useState(false)
+  const [canMessage, setCanMessage] = useState(true) // 鍵アカウント制御
   const bottomRef = useRef(null)
 
   // DM画面を開いたら即既読にする
@@ -33,6 +34,21 @@ export default function DMPage() {
     }
     fetchPartner()
   }, [userId, navigate])
+
+  // 相手が鍵アカウントの場合、承認済み申請があるか確認
+  useEffect(() => {
+    if (!partner || !user) return
+    if (!partner.is_private) { setCanMessage(true); return }
+
+    supabase
+      .from('dm_requests')
+      .select('status')
+      .eq('sender_id', user.id)
+      .eq('receiver_id', partner.id)
+      .eq('status', 'accepted')
+      .maybeSingle()
+      .then(({ data }) => setCanMessage(!!data))
+  }, [partner?.id, user?.id])
 
   useEffect(() => {
     if (!user) return
@@ -157,24 +173,36 @@ export default function DMPage() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Input */}
-        <form onSubmit={sendMessage} className="px-4 py-3 border-t border-gray-100 flex gap-2">
-          <input
-            type="text"
-            placeholder={`${partner?.nickname ?? ''}さんにメッセージ...`}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            maxLength={500}
-            className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || sending}
-            className="bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white rounded-xl px-4 py-2.5 transition font-medium text-sm"
-          >
-            送信
-          </button>
-        </form>
+        {/* Input / 鍵アカウントブロック */}
+        {canMessage ? (
+          <form onSubmit={sendMessage} className="px-4 py-3 border-t border-gray-100 flex gap-2">
+            <input
+              type="text"
+              placeholder={`${partner?.nickname ?? ''}さんにメッセージ...`}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              maxLength={500}
+              className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || sending}
+              className="bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white rounded-xl px-4 py-2.5 transition font-medium text-sm"
+            >
+              送信
+            </button>
+          </form>
+        ) : (
+          <div className="px-4 py-4 border-t border-gray-100 text-center space-y-1">
+            <p className="text-sm text-gray-500">🔒 このユーザーはDM申請制です</p>
+            <button
+              onClick={() => navigate(`/profile/${userId}`)}
+              className="text-xs text-indigo-500 hover:text-indigo-700 underline transition"
+            >
+              プロフィールからDM申請を送る
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
