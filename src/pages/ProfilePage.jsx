@@ -2,6 +2,7 @@ import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useUser } from '../context/UserContext'
 import { supabase } from '../supabaseClient'
+import { PREFECTURES, GENDERS } from '../constants/profile'
 
 // ---- アバターアップロード ----
 function AvatarUpload({ user, onUploaded }) {
@@ -68,16 +69,10 @@ function RlsErrorGuide() {
   }
   return (
     <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2 text-left">
-      <p className="text-xs font-semibold text-amber-800">
-        ⚠ Supabase の DELETE ポリシーが未設定です
-      </p>
-      <p className="text-xs text-amber-700">
-        Supabase ダッシュボード → <strong>SQL Editor</strong> で以下を実行後、再度お試しください。
-      </p>
+      <p className="text-xs font-semibold text-amber-800">⚠ Supabase の DELETE ポリシーが未設定です</p>
+      <p className="text-xs text-amber-700">Supabase ダッシュボード → <strong>SQL Editor</strong> で以下を実行後、再度お試しください。</p>
       <div className="relative">
-        <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-3 overflow-x-auto leading-relaxed whitespace-pre-wrap">
-{DELETE_SQL}
-        </pre>
+        <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-3 overflow-x-auto leading-relaxed whitespace-pre-wrap">{DELETE_SQL}</pre>
         <button onClick={copy}
           className="absolute top-1.5 right-1.5 text-[10px] bg-gray-700 hover:bg-gray-600 text-white px-2 py-0.5 rounded transition">
           {copied ? '✓ コピー済' : 'コピー'}
@@ -98,64 +93,34 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
 
   const handleDelete = async () => {
     if (!confirmed) return
-    setDeleting(true)
-    setError(null)
-    setRlsBlocked(false)
+    setDeleting(true); setError(null); setRlsBlocked(false)
 
-    // Step 1: DM削除
     const { data: deletedDMs, error: dmErr } = await supabase
-      .from('direct_messages')
-      .delete()
-      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`)
-      .select('id')
-    if (dmErr) {
-      setError(`DM削除エラー: ${dmErr.message}`)
-      setDeleting(false); return
-    }
+      .from('direct_messages').delete()
+      .or(`sender_id.eq.${user.id},receiver_id.eq.${user.id}`).select('id')
+    if (dmErr) { setError(`DM削除エラー: ${dmErr.message}`); setDeleting(false); return }
 
-    // Step 2: チャットメッセージ削除
     const { data: deletedMsgs, error: msgErr } = await supabase
-      .from('messages')
-      .delete()
-      .eq('nickname', user.nickname)
-      .select('id')
-    if (msgErr) {
-      setError(`メッセージ削除エラー: ${msgErr.message}`)
-      setDeleting(false); return
-    }
+      .from('messages').delete().eq('nickname', user.nickname).select('id')
+    if (msgErr) { setError(`メッセージ削除エラー: ${msgErr.message}`); setDeleting(false); return }
 
-    // Step 3: ユーザー削除 — .select('id') で実際に削除されたか確認
     const { data: deletedUser, error: userErr } = await supabase
-      .from('users')
-      .delete()
-      .eq('id', user.id)
-      .select('id')
-    if (userErr) {
-      setError(`アカウント削除エラー: ${userErr.message}`)
-      setDeleting(false); return
-    }
+      .from('users').delete().eq('id', user.id).select('id')
+    if (userErr) { setError(`アカウント削除エラー: ${userErr.message}`); setDeleting(false); return }
 
-    // 0件 = RLS が DELETE をブロックしている
-    if (!deletedUser || deletedUser.length === 0) {
-      setRlsBlocked(true)
-      setDeleting(false); return
-    }
+    if (!deletedUser || deletedUser.length === 0) { setRlsBlocked(true); setDeleting(false); return }
 
-    // Step 4: アバター画像を削除（失敗しても続行）
     await Promise.allSettled(
       ['jpg', 'jpeg', 'png', 'webp', 'gif'].map((ext) =>
         supabase.storage.from('avatars').remove([`${user.id}.${ext}`])
       )
     )
-
     onDeleted()
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
-      onClick={onClose}>
-      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-5"
-        onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-5" onClick={(e) => e.stopPropagation()}>
         <div className="text-center">
           <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3">
             <span className="text-2xl">🗑</span>
@@ -163,34 +128,21 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
           <h2 className="text-lg font-bold text-gray-800">アカウントを削除しますか？</h2>
           <p className="text-sm text-gray-500 mt-1">この操作は取り消せません。</p>
         </div>
-
         <ul className="text-xs text-gray-600 bg-gray-50 rounded-xl px-4 py-3 space-y-1">
           <li>・プロフィール情報（ニックネーム・自己紹介・アイコン）</li>
           <li>・送受信したDMメッセージ</li>
           <li>・投稿したチャットメッセージ</li>
         </ul>
-
         <div>
           <label className="text-xs font-medium text-gray-600">
             確認のため <span className="font-bold text-gray-800">「{user.nickname}」</span> と入力してください
           </label>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={user.nickname}
-            autoFocus
-            className="w-full mt-1.5 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 transition"
-          />
+          <input type="text" value={input} onChange={(e) => setInput(e.target.value)}
+            placeholder={user.nickname} autoFocus
+            className="w-full mt-1.5 border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 transition" />
         </div>
-
-        {error && (
-          <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">⚠ {error}</p>
-        )}
-
-        {/* RLS未設定ガイド */}
+        {error && <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2">⚠ {error}</p>}
         {rlsBlocked && <RlsErrorGuide />}
-
         <div className="flex gap-2">
           <button onClick={onClose} disabled={deleting}
             className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 rounded-xl py-2.5 text-sm font-medium transition">
@@ -206,27 +158,34 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
   )
 }
 
+// ---- フォームフィールドの共通スタイル ----
+const inputCls = 'w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition bg-white'
+
 // ---- プロフィール編集ページ ----
 export default function ProfilePage() {
   const { user, updateProfile, updateAvatar, clearAccountStorage } = useUser()
   const navigate = useNavigate()
-  const [bio, setBio] = useState(user?.bio || '')
-  const [hobbies, setHobbies] = useState(user?.hobbies || '')
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+
+  const [bio, setBio]             = useState(user?.bio || '')
+  const [hobbies, setHobbies]     = useState(user?.hobbies || '')
+  const [age, setAge]             = useState(user?.age ?? '')
+  const [gender, setGender]       = useState(user?.gender ?? '')
+  const [prefecture, setPrefecture] = useState(user?.prefecture ?? '')
+  const [saving, setSaving]       = useState(false)
+  const [saved, setSaved]         = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (age !== '' && (Number(age) < 0 || Number(age) > 120)) return
     setSaving(true)
-    await updateProfile(bio.trim(), hobbies.trim())
+    await updateProfile(bio.trim(), hobbies.trim(), age, gender, prefecture)
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
 
   const handleDeleted = () => {
-    // chat_user / chat_user_id / dm_read_* を全消去してReact stateもリセット
     clearAccountStorage(user.id)
     navigate('/')
   }
@@ -235,38 +194,67 @@ export default function ProfilePage() {
     <div className="max-w-lg mx-auto w-full px-4 py-4">
       <p className="text-sm font-semibold text-gray-700 mb-4">👤 プロフィール編集</p>
       <div className="bg-white rounded-2xl shadow-lg p-6 space-y-6">
-        {/* Avatar */}
+
+        {/* アバター */}
         <div className="flex flex-col items-center pb-5 border-b border-gray-100">
           <AvatarUpload user={user} onUploaded={updateAvatar} />
           <p className="font-bold text-gray-800 text-lg mt-3">{user?.nickname}</p>
           <p className="text-xs text-gray-400">ニックネームは変更できません</p>
         </div>
 
-        {/* Profile form */}
+        {/* 編集フォーム */}
         <form onSubmit={handleSubmit} className="space-y-4">
+
+          {/* 自己紹介 */}
           <div>
             <label className="text-sm font-medium text-gray-600">自己紹介</label>
-            <textarea
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              placeholder="自己紹介を入力してください"
-              maxLength={200}
-              rows={3}
-              className="w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition resize-none"
-            />
+            <textarea value={bio} onChange={(e) => setBio(e.target.value)}
+              placeholder="自己紹介を入力してください" maxLength={200} rows={3}
+              className={`${inputCls} resize-none`} />
             <p className="text-xs text-gray-400 text-right mt-0.5">{bio.length}/200</p>
           </div>
+
+          {/* 趣味 */}
           <div>
             <label className="text-sm font-medium text-gray-600">趣味</label>
-            <input
-              type="text"
-              value={hobbies}
-              onChange={(e) => setHobbies(e.target.value)}
-              placeholder="例: 読書・映画・料理"
-              maxLength={100}
-              className="w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-transparent transition"
-            />
+            <input type="text" value={hobbies} onChange={(e) => setHobbies(e.target.value)}
+              placeholder="例: 読書・映画・料理" maxLength={100} className={inputCls} />
           </div>
+
+          {/* 年齢・性別 を横並び */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-gray-600">年齢</label>
+              <input type="number" value={age}
+                onChange={(e) => setAge(e.target.value === '' ? '' : e.target.value)}
+                min={0} max={120} placeholder="例: 24"
+                className={inputCls} />
+              {age !== '' && (Number(age) < 0 || Number(age) > 120) && (
+                <p className="text-xs text-red-500 mt-0.5">0〜120の数値を入力してください</p>
+              )}
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-600">性別</label>
+              <select value={gender} onChange={(e) => setGender(e.target.value)} className={inputCls}>
+                <option value="">未設定</option>
+                {GENDERS.map((g) => (
+                  <option key={g.value} value={g.value}>{g.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* 居住地 */}
+          <div>
+            <label className="text-sm font-medium text-gray-600">居住地</label>
+            <select value={prefecture} onChange={(e) => setPrefecture(e.target.value)} className={inputCls}>
+              <option value="">未設定</option>
+              {PREFECTURES.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+
           <button type="submit" disabled={saving}
             className={`w-full font-semibold rounded-xl py-2.5 transition ${
               saved ? 'bg-green-500 text-white'
@@ -286,11 +274,7 @@ export default function ProfilePage() {
       </div>
 
       {showDeleteModal && (
-        <DeleteAccountModal
-          user={user}
-          onClose={() => setShowDeleteModal(false)}
-          onDeleted={handleDeleted}
-        />
+        <DeleteAccountModal user={user} onClose={() => setShowDeleteModal(false)} onDeleted={handleDeleted} />
       )}
     </div>
   )

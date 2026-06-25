@@ -79,19 +79,34 @@ export function UserProvider({ children }) {
       if (saved) {
         const userData = JSON.parse(saved)
 
-        // DBに存在するか確認（管理者削除・アカウント削除後の復活を防ぐ）
-        const exists = await userExistsInDB(userData.id)
-        if (!exists) {
+        // DBから最新プロフィールを取得（age/gender/prefecture 等を含む）
+        const { data: dbUser } = await supabase
+          .from('users').select('*').eq('id', userData.id).maybeSingle()
+
+        if (!dbUser) {
+          // DB に存在しない → 強制ログアウト（削除済みアカウントの復活防止）
           console.log('[init] UUIDがDBに存在しないため強制ログアウト:', userData.id)
           clearAllUserStorage(userData.id)
           setInitializing(false)
           return
         }
 
-        const { ok, error } = await syncUserToDB(userData)
-        if (!ok) setDbError(error?.message ?? 'DB同期エラー')
-        else setDbError(null)
-        setUser(userData)
+        // DB の最新値を localStorage に統合してセット
+        const merged = {
+          ...userData,
+          nickname: dbUser.nickname,
+          bio: dbUser.bio ?? '',
+          hobbies: dbUser.hobbies ?? '',
+          age: dbUser.age ?? null,
+          gender: dbUser.gender ?? null,
+          prefecture: dbUser.prefecture ?? null,
+          avatar_url: dbUser.avatar_url ?? userData.avatar_url ?? null,
+        }
+        localStorage.setItem('chat_user', JSON.stringify(merged))
+        setUser(merged)
+
+        // last_seen_at を更新
+        supabase.from('users').update({ last_seen_at: new Date().toISOString() }).eq('id', userData.id)
       }
       setInitializing(false)
     }
@@ -137,11 +152,18 @@ export function UserProvider({ children }) {
     setDbError(null)
   }
 
-  const updateProfile = async (bio, hobbies) => {
+  const updateProfile = async (bio, hobbies, age, gender, prefecture) => {
     if (!user) return
-    const { error } = await supabase.from('users').update({ bio, hobbies }).eq('id', user.id)
+    const patch = {
+      bio,
+      hobbies,
+      age: age !== '' && age !== null && age !== undefined ? Number(age) : null,
+      gender: gender || null,
+      prefecture: prefecture || null,
+    }
+    const { error } = await supabase.from('users').update(patch).eq('id', user.id)
     if (error) { console.error('[DB] updateProfile失敗:', error.message); return }
-    const updated = { ...user, bio, hobbies }
+    const updated = { ...user, ...patch }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
   }
