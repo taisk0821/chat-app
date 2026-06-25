@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
 import { useDM } from '../context/DMContext'
+import { triggerPushNotification } from '../hooks/usePushNotifications'
 
 function formatTime(isoString) {
   return new Date(isoString).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
@@ -80,11 +81,23 @@ export default function DMPage() {
     if (!text || sending) return
     setSending(true)
     setInput('')
-    await supabase.from('direct_messages').insert({
+
+    const { error } = await supabase.from('direct_messages').insert({
       sender_id: user.id,
       receiver_id: userId,
       content: text,
     })
+
+    if (!error) {
+      // バックグラウンドでプッシュ通知をトリガー（Edge Function 未設定時はサイレントに失敗）
+      triggerPushNotification({
+        receiverId: userId,
+        senderName: user.nickname,
+        senderId: user.id,
+        content: text,
+      })
+    }
+
     setSending(false)
   }
 

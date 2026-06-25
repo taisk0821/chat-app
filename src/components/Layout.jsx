@@ -1,12 +1,17 @@
+import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useUser } from '../context/UserContext'
 import { useDM } from '../context/DMContext'
+import { usePushNotifications, isPushSupported, isIOS, isStandalone } from '../hooks/usePushNotifications'
 
 export default function Layout({ children }) {
   const { user, logout } = useUser()
   const { totalUnread, notification, setNotification } = useDM()
   const location = useLocation()
   const navigate = useNavigate()
+
+  const { permission, subscribed, loading, subscribe } = usePushNotifications(user?.id)
+  const [bannerDismissed, setBannerDismissed] = useState(false)
 
   const isActive = (to) => {
     if (to === '/talks') return location.pathname === '/talks' || location.pathname.startsWith('/dm/')
@@ -19,7 +24,6 @@ export default function Layout({ children }) {
     navigate('/')
   }
 
-  // 通知トーストをクリックしてDMへ
   const handleNotifyClick = () => {
     if (!notification) return
     navigate(`/dm/${notification.senderId}`)
@@ -37,6 +41,16 @@ export default function Layout({ children }) {
     { to: '/users', label: 'ユーザー', icon: '👥' },
     { to: '/profile', label: 'マイページ', icon: '👤' },
   ]
+
+  // バナーを表示するか判定
+  const showIOSGuide = isIOS() && !isStandalone() && !bannerDismissed && isPushSupported()
+  const showPermissionBanner =
+    !showIOSGuide &&
+    !bannerDismissed &&
+    !subscribed &&
+    permission !== 'granted' &&
+    permission !== 'denied' &&
+    isPushSupported()
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-purple-50 flex flex-col">
@@ -72,9 +86,49 @@ export default function Layout({ children }) {
         </div>
       </header>
 
+      {/* iOS: ホーム画面追加ガイド */}
+      {showIOSGuide && (
+        <div className="bg-indigo-600 text-white px-4 py-2.5 flex items-start justify-between gap-3">
+          <div className="text-xs leading-relaxed">
+            <p className="font-semibold">📲 iPhoneでプッシュ通知を受け取るには</p>
+            <p className="text-indigo-200 mt-0.5">
+              Safari の共有ボタン →「ホーム画面に追加」してアプリを起動してください
+            </p>
+          </div>
+          <button
+            onClick={() => setBannerDismissed(true)}
+            className="text-indigo-300 hover:text-white shrink-0 text-lg leading-none mt-0.5"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* 通知許可バナー */}
+      {showPermissionBanner && (
+        <div className="bg-indigo-600 text-white px-4 py-2.5 flex items-center justify-between gap-3">
+          <span className="text-xs">🔔 DMが届いたときにプッシュ通知を受け取りますか？</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={subscribe}
+              disabled={loading}
+              className="bg-white text-indigo-700 text-xs font-semibold px-3 py-1 rounded-lg disabled:opacity-60 transition"
+            >
+              {loading ? '設定中...' : '許可する'}
+            </button>
+            <button
+              onClick={() => setBannerDismissed(true)}
+              className="text-indigo-300 hover:text-white text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 flex flex-col">{children}</div>
 
-      {/* DM通知トースト */}
+      {/* DM通知トースト（アプリ内） */}
       {notification && location.pathname !== `/dm/${notification.senderId}` && (
         <div
           onClick={handleNotifyClick}
