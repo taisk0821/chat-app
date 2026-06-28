@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
 import ReportModal from '../components/ReportModal'
+import PostCard from '../components/PostCard'
 import { triggerPushNotification } from '../hooks/usePushNotifications'
 
 function isOnline(lastSeen) {
@@ -10,21 +11,40 @@ function isOnline(lastSeen) {
   return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000
 }
 
+async function fetchEnrichedPosts(authorId, viewerId) {
+  const { data: raw } = await supabase
+    .from('posts').select('*').eq('author_id', authorId)
+    .order('created_at', { ascending: false }).limit(50)
+  if (!raw?.length) return []
+  const ids = raw.map((p) => p.id)
+  const [{ data: allLikes }, { data: myLikes }, { data: allReplies }] = await Promise.all([
+    supabase.from('post_likes').select('post_id').in('post_id', ids),
+    supabase.from('post_likes').select('post_id').in('post_id', ids).eq('user_id', viewerId),
+    supabase.from('post_replies').select('post_id').in('post_id', ids),
+  ])
+  const lc = {}; (allLikes ?? []).forEach((l) => { lc[l.post_id] = (lc[l.post_id] ?? 0) + 1 })
+  const liked = new Set((myLikes ?? []).map((l) => l.post_id))
+  const rc = {}; (allReplies ?? []).forEach((r) => { rc[r.post_id] = (rc[r.post_id] ?? 0) + 1 })
+  return raw.map((p) => ({ ...p, like_count: lc[p.id] ?? 0, liked: liked.has(p.id), reply_count: rc[p.id] ?? 0 }))
+}
+
 export default function UserProfilePage() {
   const { userId } = useParams()
   const { user } = useUser()
   const navigate = useNavigate()
-  const [profile, setProfile]             = useState(null)
-  const [loading, setLoading]             = useState(true)
-  const [requestStatus, setRequestStatus]   = useState(null) // null|'none'|'pending'|'accepted'|'rejected'
+
+  const [profile, setProfile]               = useState(null)
+  const [loading, setLoading]               = useState(true)
+  const [requestStatus, setRequestStatus]   = useState(null)
   const [requestLoading, setRequestLoading] = useState(false)
   const [dmRequestError, setDmRequestError] = useState('')
   const [reportOpen, setReportOpen]         = useState(false)
-  // フォロー
   const [isFollowing, setIsFollowing]       = useState(false)
   const [followersCount, setFollowersCount] = useState(0)
   const [followingCount, setFollowingCount] = useState(0)
   const [followLoading, setFollowLoading]   = useState(false)
+  const [posts, setPosts]                   = useState([])
+  const [postsLoading, setPostsLoading]     = useState(true)
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -36,7 +56,6 @@ export default function UserProfilePage() {
     fetchProfile()
   }, [userId, navigate])
 
-  // フォロー数・フォロワー数・自分のフォロー状態を取得
   useEffect(() => {
     if (!profile) return
     Promise.all([
@@ -52,6 +71,16 @@ export default function UserProfilePage() {
       setIsFollowing((selfFollow.count ?? 0) > 0)
     })
   }, [profile?.id, user.id])
+
+  const loadPosts = useCallback(async () => {
+    if (!profile) return
+    setPostsLoading(true)
+    const enriched = await fetchEnrichedPosts(profile.id, user.id)
+    setPosts(enriched)
+    setPostsLoading(false)
+  }, [profile?.id, user.id])
+
+  useEffect(() => { loadPosts() }, [loadPosts])
 
   const toggleFollow = async () => {
     if (!profile || followLoading) return
@@ -69,47 +98,24 @@ export default function UserProfilePage() {
     setFollowLoading(false)
   }
 
-  // 鍵アカウントの場合、DM申請状態を確認
   useEffect(() => {
     if (!profile || profile.id === user.id || !profile.is_private) return
-    supabase
-      .from('dm_requests')
-      .select('status')
-      .eq('sender_id', user.id)
-      .eq('receiver_id', profile.id)
-      .maybeSingle()
-      .then(({ data }) => {
-        setRequestStatus(data?.status ?? 'none')
-      })
+    supabase.from('dm_requests').select('status')
+      .eq('sender_id', user.id).eq('receiver_id', profile.id).maybeSingle()
+      .then(({ data }) => setRequestStatus(data?.status ?? 'none'))
   }, [profile, user.id])
 
   const sendDMRequest = async () => {
     if (!profile) return
-    setRequestLoading(true)
-    setDmRequestError('')
+    setRequestLoading(true); setDmRequestError('')
     const { error } = await supabase.from('dm_requests').upsert(
-      {
-        sender_id: user.id,
-        sender_nickname: user.nickname,
-        receiver_id: profile.id,
-        status: 'pending',
-      },
+      { sender_id: user.id, sender_nickname: user.nickname, receiver_id: profile.id, status: 'pending' },
       { onConflict: 'sender_id,receiver_id' }
     )
     setRequestLoading(false)
-    if (error) {
-      console.error('[dm_requests] upsert失敗:', error.code, error.message)
-      setDmRequestError(`申請の送信に失敗しました: ${error.message}`)
-      return
-    }
+    if (error) { setDmRequestError(`申請の送信に失敗しました: ${error.message}`); return }
     setRequestStatus('pending')
-    // プッシュ通知
-    triggerPushNotification({
-      receiverId: profile.id,
-      senderName: user.nickname,
-      senderId: user.id,
-      content: 'DMの申請が届いています',
-    })
+    triggerPushNotification({ receiverId: profile.id, senderName: user.nickname, senderId: user.id, content: 'DMの申請が届いています' })
   }
 
   if (loading) {
@@ -125,178 +131,174 @@ export default function UserProfilePage() {
   const online = isOnline(profile.last_seen_at)
   const isMe = profile.id === user.id
 
-  // DM ボタンの内容を決定
   const renderDMButton = () => {
     if (isMe) {
       return (
-        <button
-          onClick={() => navigate('/profile')}
-          className="w-full border border-indigo-300 text-indigo-600 hover:bg-indigo-50 font-semibold rounded-xl py-2.5 text-sm transition"
-        >
+        <button onClick={() => navigate('/profile')}
+          className="flex-1 border border-gray-300 text-gray-700 hover:bg-gray-50 font-semibold rounded-full py-2 text-sm transition">
           プロフィールを編集
         </button>
       )
     }
     if (!profile.is_private) {
       return (
-        <button
-          onClick={() => navigate(`/dm/${profile.id}`)}
-          className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl py-2.5 text-sm transition"
-        >
+        <button onClick={() => navigate(`/dm/${profile.id}`)}
+          className="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-full py-2 text-sm transition">
           💬 話しかける
         </button>
       )
     }
-    // 鍵アカウント — ステータス別ボタン
     if (requestStatus === null) return null
     if (requestStatus === 'accepted') {
       return (
-        <button
-          onClick={() => navigate(`/dm/${profile.id}`)}
-          className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl py-2.5 text-sm transition"
-        >
+        <button onClick={() => navigate(`/dm/${profile.id}`)}
+          className="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-full py-2 text-sm transition">
           💬 話しかける
         </button>
       )
     }
     if (requestStatus === 'pending') {
       return (
-        <button disabled className="w-full bg-gray-100 text-gray-400 font-semibold rounded-xl py-2.5 text-sm cursor-not-allowed">
-          🕐 申請済み（承認待ち）
+        <button disabled
+          className="flex-1 bg-gray-100 text-gray-400 font-semibold rounded-full py-2 text-sm cursor-not-allowed">
+          🕐 申請済み
         </button>
       )
     }
-    if (requestStatus === 'rejected') {
-      return (
-        <button
-          onClick={sendDMRequest}
-          disabled={requestLoading}
-          className="w-full bg-orange-500 hover:bg-orange-600 disabled:bg-orange-200 text-white font-semibold rounded-xl py-2.5 text-sm transition"
-        >
-          {requestLoading ? '送信中...' : '🔒 再申請する'}
-        </button>
-      )
-    }
-    // 'none' — 未申請
     return (
-      <button
-        onClick={sendDMRequest}
-        disabled={requestLoading}
-        className="w-full bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white font-semibold rounded-xl py-2.5 text-sm transition"
-      >
-        {requestLoading ? '送信中...' : '🔒 DMの申請を送る'}
+      <button onClick={sendDMRequest} disabled={requestLoading}
+        className="flex-1 bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white font-semibold rounded-full py-2 text-sm transition">
+        {requestLoading ? '送信中...' : (requestStatus === 'rejected' ? '🔒 再申請する' : '🔒 DMの申請を送る')}
       </button>
     )
   }
 
   return (
-    <div className="max-w-lg mx-auto w-full px-4 py-4">
-      <button
-        onClick={() => navigate('/users')}
-        className="flex items-center gap-1 text-sm text-gray-400 hover:text-gray-600 mb-4 transition"
-      >
-        ← ユーザー一覧に戻る
-      </button>
+    <div className="max-w-lg mx-auto w-full pb-8">
 
-      <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
-        <div className="h-20 bg-gradient-to-r from-indigo-400 to-purple-400" />
+      {/* ── カバー写真 ── */}
+      <div className="relative h-36 bg-gradient-to-r from-indigo-400 to-purple-500 overflow-hidden">
+        {profile.cover_url && (
+          <img src={profile.cover_url} alt="cover" className="w-full h-full object-cover" />
+        )}
+        <button
+          onClick={() => navigate(-1)}
+          className="absolute top-3 left-3 w-8 h-8 rounded-full bg-black/40 flex items-center justify-center text-white text-sm hover:bg-black/60 transition"
+        >
+          ←
+        </button>
+      </div>
 
-        <div className="px-6 pb-6">
-          {/* アバター */}
-          <div className="relative -mt-10 mb-3 inline-block">
-            {profile.avatar_url ? (
-              <img
-                src={profile.avatar_url}
-                alt={profile.nickname}
-                className="w-20 h-20 rounded-full object-cover border-4 border-white shadow"
-              />
-            ) : (
-              <div className="w-20 h-20 rounded-full bg-indigo-100 border-4 border-white shadow flex items-center justify-center text-indigo-600 font-bold text-3xl">
-                {profile.nickname[0].toUpperCase()}
-              </div>
-            )}
+      <div className="px-4">
+        {/* ── アバター + ボタン ── */}
+        <div className="flex items-end justify-between -mt-10 mb-3">
+          <div className="relative">
+            <div className="w-20 h-20 rounded-full ring-4 ring-white shadow-md overflow-hidden">
+              {profile.avatar_url ? (
+                <img src={profile.avatar_url} alt={profile.nickname} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-3xl">
+                  {profile.nickname[0].toUpperCase()}
+                </div>
+              )}
+            </div>
             {online && (
               <div className="absolute bottom-1 right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-white" />
             )}
           </div>
 
-          {/* 名前・バッジ */}
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <h1 className="text-xl font-bold text-gray-800">{profile.nickname}</h1>
+          {/* ボタン群 */}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {!isMe && (
+              <button
+                onClick={() => setReportOpen(true)}
+                className="w-9 h-9 rounded-full border border-gray-200 flex items-center justify-center text-gray-400 hover:text-red-400 hover:border-red-200 transition text-sm"
+                title="通報する"
+              >
+                🚩
+              </button>
+            )}
+            {!isMe && (
+              <button
+                onClick={toggleFollow}
+                disabled={followLoading}
+                className={`font-semibold rounded-full px-4 py-2 text-sm transition ${
+                  isFollowing
+                    ? 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                    : 'bg-gray-900 hover:bg-gray-700 text-white'
+                }`}
+              >
+                {followLoading ? '...' : isFollowing ? 'フォロー中' : 'フォロー'}
+              </button>
+            )}
+            {renderDMButton()}
+          </div>
+        </div>
+
+        {/* ── プロフィール情報 ── */}
+        <div className="mb-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-lg font-bold text-gray-900">{profile.nickname}</h1>
             {profile.is_private && (
               <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">🔒 鍵</span>
             )}
             {isMe && (
               <span className="text-xs text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full">あなた</span>
             )}
-          </div>
-          <p className="text-xs text-gray-400 mb-3">
-            {online ? '🟢 オンライン' : '⚫ オフライン'}
-          </p>
-
-          {/* フォロー数・フォロワー数 */}
-          <div className="flex gap-5 mb-4">
-            <button
-              onClick={() => navigate(`/follows/${profile.id}/followers`)}
-              className="text-center hover:opacity-70 transition"
-            >
-              <p className="font-bold text-gray-800 text-sm">{followersCount}</p>
-              <p className="text-xs text-gray-500">フォロワー</p>
-            </button>
-            <button
-              onClick={() => navigate(`/follows/${profile.id}/following`)}
-              className="text-center hover:opacity-70 transition"
-            >
-              <p className="font-bold text-gray-800 text-sm">{followingCount}</p>
-              <p className="text-xs text-gray-500">フォロー中</p>
-            </button>
+            <span className="text-xs text-gray-400">{online ? '🟢' : '⚫'}</span>
           </div>
 
           {profile.bio && (
-            <div className="mb-3">
-              <p className="text-xs font-semibold text-gray-500 mb-1">自己紹介</p>
-              <p className="text-sm text-gray-700 whitespace-pre-wrap">{profile.bio}</p>
-            </div>
-          )}
-          {profile.hobbies && (
-            <div className="mb-5">
-              <p className="text-xs font-semibold text-gray-500 mb-1">趣味</p>
-              <p className="text-sm text-gray-700">{profile.hobbies}</p>
-            </div>
+            <p className="text-sm text-gray-700 mt-1.5 whitespace-pre-wrap leading-relaxed">{profile.bio}</p>
           )}
 
-          {dmRequestError && (
-            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 space-y-1">
-              <p className="font-semibold">⚠ {dmRequestError}</p>
-              <p className="text-red-400">dm_requestsテーブルが存在しない可能性があります。管理者にお知らせください。</p>
-            </div>
-          )}
-
-          <div className="space-y-2.5">
-            {/* フォローボタン（自分以外） */}
-            {!isMe && (
-              <button
-                onClick={toggleFollow}
-                disabled={followLoading}
-                className={`w-full font-semibold rounded-xl py-2.5 text-sm transition ${
-                  isFollowing
-                    ? 'border border-gray-300 text-gray-600 hover:bg-gray-50'
-                    : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
-                }`}
-              >
-                {followLoading ? '...' : isFollowing ? '✓ フォロー中' : 'フォローする'}
-              </button>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+            {profile.prefecture && (
+              <span className="text-xs text-gray-500 flex items-center gap-1">📍 {profile.prefecture}</span>
             )}
-            {renderDMButton()}
-            {!isMe && (
-              <button
-                onClick={() => setReportOpen(true)}
-                className="w-full border border-red-200 text-red-400 hover:text-red-600 hover:border-red-400 hover:bg-red-50 font-medium rounded-xl py-2 text-sm transition"
-              >
-                通報する
-              </button>
+            {profile.age && (
+              <span className="text-xs text-gray-500">{profile.age}歳</span>
+            )}
+            {profile.hobbies && (
+              <span className="text-xs text-gray-500">🎯 {profile.hobbies}</span>
             )}
           </div>
+
+          <div className="flex gap-4 mt-3">
+            <button onClick={() => navigate(`/follows/${profile.id}/following`)}
+              className="text-xs text-gray-500 hover:underline">
+              <span className="font-bold text-gray-800">{followingCount}</span> フォロー中
+            </button>
+            <button onClick={() => navigate(`/follows/${profile.id}/followers`)}
+              className="text-xs text-gray-500 hover:underline">
+              <span className="font-bold text-gray-800">{followersCount}</span> フォロワー
+            </button>
+          </div>
+
+          {dmRequestError && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+              <p className="font-semibold">⚠ {dmRequestError}</p>
+            </div>
+          )}
+        </div>
+
+        {/* ── 区切り ── */}
+        <div className="border-t border-gray-100 mb-4" />
+
+        {/* ── 投稿タイムライン ── */}
+        <div className="space-y-3">
+          {postsLoading && (
+            <p className="text-center text-gray-400 text-sm py-6">読み込み中...</p>
+          )}
+          {!postsLoading && posts.length === 0 && (
+            <div className="text-center py-10">
+              <p className="text-3xl mb-2">📭</p>
+              <p className="text-gray-500 text-sm">まだ投稿がありません</p>
+            </div>
+          )}
+          {posts.map((post) => (
+            <PostCard key={post.id} post={post} />
+          ))}
         </div>
       </div>
 

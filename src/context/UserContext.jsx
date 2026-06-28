@@ -102,6 +102,7 @@ export function UserProvider({ children }) {
           prefecture: dbUser.prefecture ?? null,
           is_private: dbUser.is_private ?? false,
           avatar_url: dbUser.avatar_url ?? userData.avatar_url ?? null,
+          cover_url: dbUser.cover_url ?? userData.cover_url ?? null,
         }
         localStorage.setItem('chat_user', JSON.stringify(merged))
         setUser(merged)
@@ -183,6 +184,15 @@ export function UserProvider({ children }) {
     setUser(updated)
   }
 
+  const updateCover = async (coverUrl) => {
+    if (!user) return
+    const { error } = await supabase.from('users').update({ cover_url: coverUrl }).eq('id', user.id)
+    if (error) { console.error('[DB] updateCover失敗:', error.message); return }
+    const updated = { ...user, cover_url: coverUrl }
+    localStorage.setItem('chat_user', JSON.stringify(updated))
+    setUser(updated)
+  }
+
   // Heartbeat: last_seen_at を 30 秒ごとに更新
   useEffect(() => {
     if (!user) return
@@ -201,7 +211,7 @@ export function UserProvider({ children }) {
   }
 
   return (
-    <UserContext.Provider value={{ user, login, logout, clearAccountStorage, updateProfile, updateAvatar, dbError }}>
+    <UserContext.Provider value={{ user, login, logout, clearAccountStorage, updateProfile, updateAvatar, updateCover, dbError }}>
       {children}
     </UserContext.Provider>
   )
