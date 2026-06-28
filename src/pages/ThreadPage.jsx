@@ -224,25 +224,26 @@ export default function ThreadPage() {
           {messages.map((msg) => {
             const isMe = msg.author_nickname === user.nickname
             return (
-              <div key={msg.id} className={`flex flex-col w-full ${isMe ? 'items-end' : 'items-start'}`}>
-                <div className={`flex items-end gap-1.5 w-full ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
-                  <div className={`max-w-[78%] rounded-2xl px-4 py-2.5 text-sm break-words ${
-                    isMe
-                      ? 'bg-indigo-500 text-white rounded-br-sm'
-                      : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                  }`}>
-                    <button
-                      onClick={() => handleNicknameClick(msg.author_nickname)}
-                      className={`text-xs font-semibold hover:underline text-left block mb-0.5 ${
-                        isMe ? 'text-indigo-200' : 'text-indigo-500'
-                      }`}
-                    >
-                      {msg.author_nickname}
-                    </button>
-                    <p className="leading-relaxed">{msg.content}</p>
-                  </div>
+              <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                {/* 投稿者名：他人のメッセージのみ吹き出しの外上部に表示 */}
+                {!isMe && (
+                  <button
+                    onClick={() => handleNicknameClick(msg.author_nickname)}
+                    className="text-[11px] text-gray-400 hover:text-indigo-500 transition mb-1 ml-1 font-medium"
+                  >
+                    {msg.author_nickname}
+                  </button>
+                )}
+                {/* メッセージ吹き出し（名前は含めない） */}
+                <div className={`max-w-[78%] px-3.5 py-2 text-sm break-words leading-relaxed ${
+                  isMe
+                    ? 'bg-indigo-500 text-white rounded-2xl rounded-tr-sm'
+                    : 'bg-gray-100 text-gray-800 rounded-2xl rounded-tl-sm'
+                }`}>
+                  {msg.content}
                 </div>
-                <span className="text-xs text-gray-400 mt-0.5 px-1">
+                {/* 時刻 */}
+                <span className="text-[10px] text-gray-400 mt-1 px-1">
                   {formatTime(msg.created_at)}
                 </span>
               </div>
