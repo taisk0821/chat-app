@@ -3,7 +3,8 @@ import { UserProvider, useUser } from './context/UserContext'
 import { DMProvider } from './context/DMContext'
 import Layout from './components/Layout'
 import EnterPage from './pages/EnterPage'
-import GlobalChatPage from './pages/GlobalChatPage'
+import ThreadsPage from './pages/ThreadsPage'
+import ThreadPage from './pages/ThreadPage'
 import TalksPage from './pages/TalksPage'
 import UsersPage from './pages/UsersPage'
 import DMPage from './pages/DMPage'
@@ -29,7 +30,8 @@ function ChatApp() {
       <DMProvider>
         <Routes>
           <Route path="/" element={<PublicRoute><EnterPage /></PublicRoute>} />
-          <Route path="/chat" element={<PrivateRoute><Layout><GlobalChatPage /></Layout></PrivateRoute>} />
+          <Route path="/chat" element={<PrivateRoute><Layout><ThreadsPage /></Layout></PrivateRoute>} />
+          <Route path="/chat/:threadId" element={<PrivateRoute><Layout><ThreadPage /></Layout></PrivateRoute>} />
           <Route path="/talks" element={<PrivateRoute><Layout><TalksPage /></Layout></PrivateRoute>} />
           <Route path="/dm/:userId" element={<PrivateRoute><Layout><DMPage /></Layout></PrivateRoute>} />
           <Route path="/users" element={<PrivateRoute><Layout><UsersPage /></Layout></PrivateRoute>} />

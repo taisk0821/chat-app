@@ -122,6 +122,7 @@ export default function Layout({ children }) {
   const [bannerDismissed, dismissBanner] = usePushBannerDismissed()
 
   const isActive = (to) => {
+    if (to === '/chat')     return location.pathname === '/chat' || location.pathname.startsWith('/chat/')
     if (to === '/talks')    return location.pathname === '/talks' || location.pathname.startsWith('/dm/')
     if (to === '/requests') return location.pathname === '/requests'
     if (to === '/users')    return location.pathname === '/users' || location.pathname.startsWith('/profile/')
