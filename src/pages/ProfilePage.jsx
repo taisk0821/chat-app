@@ -29,177 +29,386 @@ DROP POLICY IF EXISTS "covers_allow_all" ON storage.objects;
 CREATE POLICY "covers_allow_all" ON storage.objects
 FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
 
-// ファイルの MIME タイプを安全に取得（iOS Camera では空の場合がある）
-function safeContentType(file) {
-  if (file.type) return file.type
-  const ext = file.name.split('.').pop().toLowerCase()
-  const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' }
-  return map[ext] ?? 'image/jpeg'
+// ---- 画像クロップ・位置調整モーダル ----
+// ファイル選択後にドラッグ位置調整 + ズームスライダー → Canvas でクロップして Blob を返す
+function ImageCropModal({ file, type, onConfirm, onCancel }) {
+  const isCircle = type === 'avatar'
+  // プレビューサイズ（画面内に収まる値）
+  const previewW = 260
+  const previewH = isCircle ? 260 : 140
+  // アップロード先の解像度
+  const outputW  = isCircle ? 400 : 1200
+  const outputH  = isCircle ? 400 : 350
+
+  const [imgSrc, setImgSrc]     = useState(null)
+  const [natW, setNatW]         = useState(0)  // 元画像の幅
+  const [natH, setNatH]         = useState(0)  // 元画像の高さ
+  const [pos, setPos]           = useState({ x: 0, y: 0 })
+  const [zoom, setZoom]         = useState(1.0)
+  const [dragging, setDragging] = useState(false)
+  const [saving, setSaving]     = useState(false)
+  const dragRef = useRef(null)  // { mx, my, px, py }
+
+  // ファイルを Data URL として読み込む
+  useEffect(() => {
+    const reader = new FileReader()
+    reader.onload = (e) => setImgSrc(e.target.result)
+    reader.readAsDataURL(file)
+  }, [file])
+
+  // "ちょうど fill" になる基本スケール（cover）
+  const baseScale = natW && natH ? Math.max(previewW / natW, previewH / natH) : 1
+  const dispW = natW * baseScale * zoom
+  const dispH = natH * baseScale * zoom
+
+  // pos をクロップ枠内に収める（画像が枠より小さくならないよう制限）
+  const clampPos = (x, y, dw = dispW, dh = dispH) => ({
+    x: Math.min(0, Math.max(previewW - dw, x)),
+    y: Math.min(0, Math.max(previewH - dh, y)),
+  })
+
+  // 画像ロード時：中央に配置
+  const onImgLoad = (e) => {
+    const nw = e.target.naturalWidth
+    const nh = e.target.naturalHeight
+    setNatW(nw); setNatH(nh)
+    const s = Math.max(previewW / nw, previewH / nh)
+    setPos({ x: (previewW - nw * s) / 2, y: (previewH - nh * s) / 2 })
+    setZoom(1.0)
+  }
+
+  // ズーム変更時：同じフォーカル点を維持したまま pos を再計算
+  const handleZoomChange = (newZoom) => {
+    const newDW = natW * baseScale * newZoom
+    const newDH = natH * baseScale * newZoom
+    const extraW = Math.max(0, dispW - previewW)
+    const extraH = Math.max(0, dispH - previewH)
+    const fx = extraW > 0 ? (-pos.x) / extraW : 0.5
+    const fy = extraH > 0 ? (-pos.y) / extraH : 0.5
+    const nEW = Math.max(0, newDW - previewW)
+    const nEH = Math.max(0, newDH - previewH)
+    setZoom(newZoom)
+    setPos(clampPos(-(fx * nEW), -(fy * nEH), newDW, newDH))
+  }
+
+  // ドラッグ / タッチ操作
+  const getXY = (e) => e.touches
+    ? { cx: e.touches[0].clientX, cy: e.touches[0].clientY }
+    : { cx: e.clientX, cy: e.clientY }
+
+  const onDown = (e) => {
+    const { cx, cy } = getXY(e)
+    dragRef.current = { mx: cx, my: cy, px: pos.x, py: pos.y }
+    setDragging(true)
+  }
+
+  const onMove = (e) => {
+    if (!dragRef.current) return
+    const { cx, cy } = getXY(e)
+    setPos(clampPos(
+      dragRef.current.px + cx - dragRef.current.mx,
+      dragRef.current.py + cy - dragRef.current.my,
+    ))
+  }
+
+  const onUp = () => { dragRef.current = null; setDragging(false) }
+
+  // 確定: Canvas でクロップ → JPEG Blob を親へ
+  const handleConfirm = () => {
+    if (!imgSrc || saving || !natW) return
+    setSaving(true)
+
+    const canvas = document.createElement('canvas')
+    canvas.width  = outputW
+    canvas.height = outputH
+    const ctx = canvas.getContext('2d')
+
+    const img = new Image()
+    img.onload = () => {
+      // 表示座標 → 元画像座標へ逆変換（ユーザーが見ている領域を特定）
+      const scale = baseScale * zoom
+      const sx = -pos.x / scale       // 元画像の切り出し開始X
+      const sy = -pos.y / scale       // 元画像の切り出し開始Y
+      const sw = previewW / scale     // 元画像から取る幅
+      const sh = previewH / scale     // 元画像から取る高さ
+      // それを output サイズに描画
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outputW, outputH)
+      canvas.toBlob((blob) => { if (blob) onConfirm(blob) }, 'image/jpeg', 0.92)
+    }
+    img.src = imgSrc
+  }
+
+  return (
+    // 背景クリックでキャンセル
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
+      onClick={onCancel}
+    >
+      <div
+        className="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* ── ヘッダー ── */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <button
+            onClick={onCancel}
+            className="text-sm font-medium text-gray-500 hover:text-gray-700 transition w-16"
+          >
+            キャンセル
+          </button>
+          <p className="text-sm font-bold text-gray-800">
+            {isCircle ? 'アイコン位置調整' : 'カバー写真位置調整'}
+          </p>
+          <button
+            onClick={handleConfirm}
+            disabled={!imgSrc || saving}
+            className="text-sm font-semibold text-indigo-600 hover:text-indigo-800 disabled:text-gray-300 transition w-16 text-right"
+          >
+            {saving ? '処理中...' : '確定'}
+          </button>
+        </div>
+
+        <div className="px-5 pt-4 pb-6 space-y-4">
+          <p className="text-xs text-center text-gray-400">
+            ドラッグして位置を調整 · スライダーでズーム
+          </p>
+
+          {/* ── クロッププレビュー ── */}
+          <div className="flex justify-center">
+            <div
+              style={{
+                width: previewW,
+                height: previewH,
+                touchAction: 'none', // iOS scroll を防ぐ
+                cursor: dragging ? 'grabbing' : (imgSrc ? 'grab' : 'default'),
+              }}
+              className={`relative overflow-hidden bg-gray-200 select-none shadow-lg ${
+                isCircle ? 'rounded-full ring-4 ring-indigo-300' : 'rounded-2xl'
+              }`}
+              onMouseDown={onDown}
+              onMouseMove={onMove}
+              onMouseUp={onUp}
+              onMouseLeave={onUp}
+              onTouchStart={onDown}
+              onTouchMove={onMove}
+              onTouchEnd={onUp}
+            >
+              {/* 画像 */}
+              {imgSrc ? (
+                <img
+                  src={imgSrc}
+                  alt=""
+                  onLoad={onImgLoad}
+                  draggable={false}
+                  style={{
+                    position: 'absolute',
+                    width: dispW || undefined,
+                    height: dispH || undefined,
+                    left: pos.x,
+                    top: pos.y,
+                    pointerEvents: 'none',
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
+                  }}
+                />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-8 h-8 rounded-full border-4 border-gray-300 border-t-indigo-500 animate-spin" />
+                </div>
+              )}
+
+              {/* 中央ガイドライン（薄い十字） */}
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute left-0 right-0 top-1/2 h-px bg-white/25" />
+                <div className="absolute top-0 bottom-0 left-1/2 w-px bg-white/25" />
+              </div>
+            </div>
+          </div>
+
+          {/* ── ズームスライダー ── */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[11px] text-gray-400 px-0.5">
+              <span>縮小</span>
+              <span className="font-medium text-gray-500">{(zoom * 100).toFixed(0)}%</span>
+              <span>拡大</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={3}
+              step={0.01}
+              value={zoom}
+              disabled={!imgSrc}
+              onChange={(e) => handleZoomChange(Number(e.target.value))}
+              className="w-full h-1.5 rounded-full appearance-none bg-gray-200 accent-indigo-500 disabled:opacity-40 cursor-pointer"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ---- アバターアップロード ----
-// <label> を使うことで iOS Safari でも確実にファイルダイアログが開く
 function AvatarUpload({ user, onUploaded }) {
-  const [uploading, setUploading] = useState(false)
+  const [pendingFile, setPendingFile] = useState(null)
+  const [uploading, setUploading]     = useState(false)
   const [uploadError, setUploadError] = useState('')
 
-  const handleChange = async (e) => {
+  const handleChange = (e) => {
     const file = e.target.files[0]
-    // 同じファイルを再選択できるようリセット
-    e.target.value = ''
-
+    e.target.value = '' // 同じファイルを再選択できるようリセット
     if (!file) return
-
-    // ファイルサイズチェック（5MB）
-    if (file.size > 5 * 1024 * 1024) {
-      setUploadError('5MB以下の画像を選択してください')
+    if (file.size > 20 * 1024 * 1024) {
+      setUploadError('20MB以下の画像を選択してください')
       return
     }
+    setUploadError('')
+    setPendingFile(file) // → モーダルを表示
+  }
 
+  const handleCropConfirm = async (blob) => {
+    setPendingFile(null)
     setUploading(true)
     setUploadError('')
-
-    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
-    const path = `${user.id}.${ext}`
-    const contentType = safeContentType(file)
-
     const { error: uploadErr } = await supabase.storage
       .from('avatars')
-      .upload(path, file, { upsert: true, contentType })
-
+      .upload(`${user.id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' })
     if (uploadErr) {
-      console.error('[Storage] アバターアップロード失敗:', uploadErr.message, uploadErr)
+      console.error('[Storage] アバターアップロード失敗:', uploadErr.message)
       setUploadError(uploadErr.message)
       setUploading(false)
       return
     }
-
-    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+    const { data } = supabase.storage.from('avatars').getPublicUrl(`${user.id}.jpg`)
     await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
     setUploading(false)
   }
 
   return (
-    <div className="relative">
-      {/* label で囲むことで iOS Safari でも動作する */}
-      <label className={`block group relative w-20 h-20 ${uploading ? 'pointer-events-none' : 'cursor-pointer'}`}>
-        <div className="w-20 h-20 rounded-full overflow-hidden ring-4 ring-white shadow-md">
-          {user.avatar_url
-            ? <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
-            : <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-3xl">
-                {user.nickname[0].toUpperCase()}
-              </div>
-          }
-        </div>
-        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-          <span className="text-white text-[10px] font-medium text-center px-1">
-            {uploading ? '保存中...' : '📷\n変更'}
-          </span>
-        </div>
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          disabled={uploading}
-          onChange={handleChange}
+    <>
+      {pendingFile && (
+        <ImageCropModal
+          file={pendingFile}
+          type="avatar"
+          onConfirm={handleCropConfirm}
+          onCancel={() => setPendingFile(null)}
         />
-      </label>
-
-      {/* アップロード中スピナー */}
-      {uploading && (
-        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
-          <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
-        </div>
       )}
+      <div className="relative">
+        <label className={`block group relative w-20 h-20 ${(uploading || pendingFile) ? 'pointer-events-none' : 'cursor-pointer'}`}>
+          <div className="w-20 h-20 rounded-full overflow-hidden ring-4 ring-white shadow-md">
+            {user.avatar_url
+              ? <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+              : <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-3xl">
+                  {user.nickname[0].toUpperCase()}
+                </div>
+            }
+          </div>
+          <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+            <span className="text-white text-xs font-medium">
+              {uploading ? '保存中...' : '📷 変更'}
+            </span>
+          </div>
+          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={handleChange} />
+        </label>
 
-      {/* エラー表示 */}
-      {uploadError && (
-        <div className="absolute top-full left-0 mt-2 z-20 w-72 bg-white border border-red-200 rounded-2xl shadow-xl p-3 space-y-2">
-          <p className="text-xs font-semibold text-red-600">⚠ アップロード失敗</p>
-          <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
-          <details className="text-xs">
-            <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQLを表示</summary>
-            <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
-          </details>
-          <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
-        </div>
-      )}
-    </div>
+        {uploading && (
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+            <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+          </div>
+        )}
+
+        {uploadError && (
+          <div className="absolute top-full left-0 mt-2 z-20 w-72 bg-white border border-red-200 rounded-2xl shadow-xl p-3 space-y-2">
+            <p className="text-xs font-semibold text-red-600">⚠ アップロード失敗</p>
+            <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+            <details className="text-xs">
+              <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQL</summary>
+              <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{STORAGE_SQL}</pre>
+            </details>
+            <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
 // ---- カバー画像アップロード ----
 function CoverUpload({ user, onUploaded }) {
-  const [uploading, setUploading] = useState(false)
+  const [pendingFile, setPendingFile] = useState(null)
+  const [uploading, setUploading]     = useState(false)
   const [uploadError, setUploadError] = useState('')
 
-  const handleChange = async (e) => {
+  const handleChange = (e) => {
     const file = e.target.files[0]
     e.target.value = ''
-
     if (!file) return
-    if (file.size > 10 * 1024 * 1024) {
-      setUploadError('10MB以下の画像を選択してください')
+    if (file.size > 20 * 1024 * 1024) {
+      setUploadError('20MB以下の画像を選択してください')
       return
     }
+    setUploadError('')
+    setPendingFile(file)
+  }
 
+  const handleCropConfirm = async (blob) => {
+    setPendingFile(null)
     setUploading(true)
     setUploadError('')
-
-    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
-    const path = `${user.id}.${ext}`
-    const contentType = safeContentType(file)
-
     const { error: uploadErr } = await supabase.storage
       .from('covers')
-      .upload(path, file, { upsert: true, contentType })
-
+      .upload(`${user.id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' })
     if (uploadErr) {
-      console.error('[Storage] カバーアップロード失敗:', uploadErr.message, uploadErr)
+      console.error('[Storage] カバーアップロード失敗:', uploadErr.message)
       setUploadError(uploadErr.message)
       setUploading(false)
       return
     }
-
-    const { data } = supabase.storage.from('covers').getPublicUrl(path)
+    const { data } = supabase.storage.from('covers').getPublicUrl(`${user.id}.jpg`)
     await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
     setUploading(false)
   }
 
   return (
-    <div className="relative">
-      <label className={`block relative h-36 bg-gradient-to-r from-indigo-400 to-purple-500 overflow-hidden group ${uploading ? 'pointer-events-none' : 'cursor-pointer'}`}>
-        {user.cover_url && (
-          <img src={user.cover_url} alt="cover" className="absolute inset-0 w-full h-full object-cover" />
-        )}
-        <div className={`absolute inset-0 flex items-center justify-center transition ${
-          user.cover_url ? 'bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100' : 'opacity-100'
-        }`}>
-          <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
-            {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
-          </span>
-        </div>
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          disabled={uploading}
-          onChange={handleChange}
+    <>
+      {pendingFile && (
+        <ImageCropModal
+          file={pendingFile}
+          type="cover"
+          onConfirm={handleCropConfirm}
+          onCancel={() => setPendingFile(null)}
         />
-      </label>
-
-      {uploadError && (
-        <div className="mx-4 mt-2 bg-white border border-red-200 rounded-2xl shadow-lg p-3 space-y-2">
-          <p className="text-xs font-semibold text-red-600">⚠ カバー写真アップロード失敗</p>
-          <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
-          <details className="text-xs">
-            <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQLを表示</summary>
-            <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
-          </details>
-          <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
-        </div>
       )}
-    </div>
+      <div className="relative">
+        <label className={`block relative h-36 bg-gradient-to-r from-indigo-400 to-purple-500 overflow-hidden group ${(uploading || pendingFile) ? 'pointer-events-none' : 'cursor-pointer'}`}>
+          {user.cover_url && (
+            <img src={user.cover_url} alt="cover" className="absolute inset-0 w-full h-full object-cover" />
+          )}
+          <div className={`absolute inset-0 flex items-center justify-center transition ${
+            user.cover_url ? 'bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100' : 'opacity-100'
+          }`}>
+            <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
+              {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
+            </span>
+          </div>
+          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={handleChange} />
+        </label>
+
+        {uploadError && (
+          <div className="mx-4 mt-2 bg-white border border-red-200 rounded-2xl shadow-lg p-3 space-y-2">
+            <p className="text-xs font-semibold text-red-600">⚠ カバー写真アップロード失敗</p>
+            <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+            <details className="text-xs">
+              <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQL</summary>
+              <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{STORAGE_SQL}</pre>
+            </details>
+            <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
