@@ -160,9 +160,9 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
 }
 
 // ---- SQL ----
-const POSTS_SQL = `-- Supabase SQL Editor で実行してください
+const POSTS_SQL = `-- Supabase SQL Editor で実行してください（全部まとめて実行OK）
 
--- ① postsテーブル（ツイート）
+-- ① postsテーブル（新規 or 既存どちらでもOK）
 CREATE TABLE IF NOT EXISTS public.posts (
   id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id         UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -171,10 +171,14 @@ CREATE TABLE IF NOT EXISTS public.posts (
   content           TEXT        NOT NULL,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 既存テーブルに author_avatar_url がない場合は追加
+ALTER TABLE public.posts ADD COLUMN IF NOT EXISTS author_avatar_url TEXT;
 ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
+-- 既存ポリシーを削除してから再作成（重複エラー回避）
+DROP POLICY IF EXISTS "posts_allow_all" ON public.posts;
 CREATE POLICY "posts_allow_all" ON public.posts FOR ALL USING (true) WITH CHECK (true);
 
--- ② post_likesテーブル（いいね）
+-- ② post_likesテーブル
 CREATE TABLE IF NOT EXISTS public.post_likes (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id    UUID        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
@@ -183,9 +187,10 @@ CREATE TABLE IF NOT EXISTS public.post_likes (
   UNIQUE (post_id, user_id)
 );
 ALTER TABLE public.post_likes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "post_likes_allow_all" ON public.post_likes;
 CREATE POLICY "post_likes_allow_all" ON public.post_likes FOR ALL USING (true) WITH CHECK (true);
 
--- ③ post_repliesテーブル（返信）
+-- ③ post_repliesテーブル
 CREATE TABLE IF NOT EXISTS public.post_replies (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id         UUID        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
@@ -195,17 +200,19 @@ CREATE TABLE IF NOT EXISTS public.post_replies (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE public.post_replies ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "post_replies_allow_all" ON public.post_replies;
 CREATE POLICY "post_replies_allow_all" ON public.post_replies FOR ALL USING (true) WITH CHECK (true);
 
--- ④ coversストレージバケット（カバー写真）
+-- ④ usersテーブルにcover_urlカラムを追加
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS cover_url TEXT;
+
+-- ⑤ coversストレージバケット
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('covers', 'covers', true)
 ON CONFLICT (id) DO NOTHING;
+DROP POLICY IF EXISTS "covers_allow_all" ON storage.objects;
 CREATE POLICY "covers_allow_all" ON storage.objects
-FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');
-
--- ⑤ usersテーブルにcover_urlカラムを追加
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS cover_url TEXT;`
+FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
 
 // ---- メイン ----
 const inputCls = 'w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition bg-white'
@@ -296,21 +303,25 @@ export default function ProfilePage() {
     if (!text || posting) return
     setPosting(true)
     setPostError('')
-    const { data, error } = await supabase.from('posts').insert({
+
+    // insert のみ実行（.select().single() は付けない — 0件返しで無音失敗するため）
+    const { error } = await supabase.from('posts').insert({
       author_id: user.id,
       author_nickname: user.nickname,
       author_avatar_url: user.avatar_url ?? null,
       content: text,
-    }).select().single()
+    })
+
     if (error) {
       console.error('[posts] insert失敗:', error.code, error.message)
-      setPostError(error.message)
+      setPostError(`${error.message}（code: ${error.code}）`)
       setPosting(false)
-      return // 入力はクリアしない
+      return
     }
-    // 成功時のみ入力クリアしてタイムラインに追加
-    setPosts((prev) => [{ ...data, like_count: 0, liked: false, reply_count: 0 }, ...prev])
+
+    // 成功 → 入力クリア後にタイムラインをDBから再取得
     setPostInput('')
+    await loadPosts()
     setPosting(false)
   }
 
