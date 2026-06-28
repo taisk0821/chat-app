@@ -17,44 +17,75 @@ function formatDate(isoString) {
   })
 }
 
+const THREAD_MESSAGES_SQL = `-- Supabase SQL Editor で実行してください
+CREATE TABLE IF NOT EXISTS public.thread_messages (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_id       UUID        NOT NULL REFERENCES public.threads(id) ON DELETE CASCADE,
+  author_id       UUID        REFERENCES public.users(id) ON DELETE SET NULL,
+  author_nickname TEXT        NOT NULL,
+  content         TEXT        NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.thread_messages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "thread_messages_allow_all" ON public.thread_messages
+  FOR ALL USING (true) WITH CHECK (true);
+ALTER PUBLICATION supabase_realtime ADD TABLE public.thread_messages;`
+
 export default function ThreadPage() {
   const { threadId } = useParams()
   const { user } = useUser()
   const navigate = useNavigate()
 
-  const [thread, setThread]         = useState(null)
-  const [messages, setMessages]     = useState([])
-  const [input, setInput]           = useState('')
-  const [sending, setSending]       = useState(false)
-  const [nicknameToId, setNicknameToId] = useState({})
+  const [thread, setThread]               = useState(null)
+  const [threadLoading, setThreadLoading] = useState(true)
+  const [messages, setMessages]           = useState([])
+  const [fetchError, setFetchError]       = useState('')
+  const [input, setInput]                 = useState('')
+  const [sending, setSending]             = useState(false)
+  const [sendError, setSendError]         = useState('')
+  const [nicknameToId, setNicknameToId]   = useState({})
   const bottomRef = useRef(null)
 
-  // スレッド本体を取得
+  // ---- スレッド本体を取得 ----
   useEffect(() => {
     supabase.from('threads').select('*').eq('id', threadId).single()
-      .then(({ data }) => {
-        if (!data) navigate('/chat', { replace: true })
-        else setThread(data)
+      .then(({ data, error }) => {
+        if (error || !data) {
+          navigate('/chat', { replace: true })
+        } else {
+          setThread(data)
+          setThreadLoading(false)
+        }
       })
   }, [threadId, navigate])
 
-  // メッセージ取得 + リアルタイム購読
+  // ---- メッセージ取得 ----
   const fetchMessages = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('thread_messages')
       .select('*')
       .eq('thread_id', threadId)
       .order('created_at', { ascending: true })
       .limit(300)
-    if (data) setMessages(data)
+
+    if (error) {
+      console.error('[thread_messages] fetch失敗:', error.code, error.message)
+      setFetchError(error.message)
+      return
+    }
+    setFetchError('')
+    setMessages(data ?? [])
   }, [threadId])
 
+  // ---- リアルタイム購読 ----
   useEffect(() => {
     fetchMessages()
     const ch = supabase
       .channel(`thread:${threadId}`)
       .on('postgres_changes', {
-        event: 'INSERT', schema: 'public', table: 'thread_messages',
+        event: 'INSERT',
+        schema: 'public',
+        table: 'thread_messages',
         filter: `thread_id=eq.${threadId}`,
       }, (payload) => {
         setMessages((prev) => {
@@ -66,7 +97,7 @@ export default function ThreadPage() {
     return () => supabase.removeChannel(ch)
   }, [fetchMessages, threadId])
 
-  // ニックネーム→ID マップ（プロフィールリンク用）
+  // ---- ニックネーム→ID マップ（プロフィールリンク用） ----
   useEffect(() => {
     if (messages.length === 0) return
     const unique = [...new Set(messages.map((m) => m.author_nickname))]
@@ -89,42 +120,53 @@ export default function ThreadPage() {
   }, [messages])
 
   const handleNicknameClick = (nickname) => {
-    if (nickname === user.nickname) {
-      navigate('/profile')
-    } else {
+    if (nickname === user.nickname) navigate('/profile')
+    else {
       const id = nicknameToId[nickname]
       if (id) navigate(`/profile/${id}`)
     }
   }
 
+  // ---- 返信送信 ----
   const handleSend = async (e) => {
     e.preventDefault()
     const text = input.trim()
     if (!text || sending) return
     setSending(true)
-    setInput('')
+    setSendError('')
+
     const { error } = await supabase.from('thread_messages').insert({
       thread_id: threadId,
       author_id: user.id,
       author_nickname: user.nickname,
       content: text,
     })
-    if (!error) {
-      // last_replied_at を更新してスレッド一覧の並び順を更新
-      supabase.from('threads')
-        .update({ last_replied_at: new Date().toISOString() })
-        .eq('id', threadId)
+
+    if (error) {
+      console.error('[thread_messages] insert失敗:', error.code, error.message)
+      setSendError(error.message)
+      setSending(false)
+      return
     }
+
+    // 成功した場合のみ入力をクリア
+    setInput('')
+    // last_replied_at 更新（スレッド一覧の並び順に反映）
+    supabase.from('threads')
+      .update({ last_replied_at: new Date().toISOString() })
+      .eq('id', threadId)
     setSending(false)
   }
 
-  if (!thread) {
+  if (threadLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <p className="text-gray-400 text-sm">読み込み中...</p>
       </div>
     )
   }
+
+  if (!thread) return null
 
   return (
     <div
@@ -149,16 +191,32 @@ export default function ThreadPage() {
           </div>
         </div>
 
-        {/* スレッド本文（bodyがある場合） */}
+        {/* スレッド本文 */}
         {thread.body && (
           <div className="px-4 py-3 bg-indigo-50 border-b border-indigo-100 shrink-0">
             <p className="text-sm text-gray-700 whitespace-pre-wrap">{thread.body}</p>
           </div>
         )}
 
+        {/* テーブルエラー */}
+        {fetchError && (
+          <div className="mx-4 mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2 shrink-0">
+            <p className="text-xs font-semibold text-red-700">⚠ 返信の読み込みに失敗しました</p>
+            <p className="text-xs text-red-500 font-mono break-all">{fetchError}</p>
+            <p className="text-xs text-red-400">Supabase SQL Editor で以下を実行してください：</p>
+            <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{THREAD_MESSAGES_SQL}</pre>
+            <button
+              onClick={fetchMessages}
+              className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg transition"
+            >
+              再試行
+            </button>
+          </div>
+        )}
+
         {/* メッセージ一覧 */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-          {messages.length === 0 && (
+          {!fetchError && messages.length === 0 && (
             <p className="text-center text-gray-400 text-sm mt-8">
               まだ返信がありません。最初に返信しましょう！
             </p>
@@ -193,13 +251,23 @@ export default function ThreadPage() {
           <div ref={bottomRef} />
         </div>
 
+        {/* 送信エラー */}
+        {sendError && (
+          <div className="mx-4 mb-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-1 shrink-0">
+            <p className="text-xs font-semibold text-red-700">⚠ 送信に失敗しました</p>
+            <p className="text-xs text-red-500 font-mono break-all">{sendError}</p>
+            <p className="text-xs text-red-400">thread_messages テーブルが存在しない可能性があります。</p>
+            <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{THREAD_MESSAGES_SQL}</pre>
+          </div>
+        )}
+
         {/* 返信入力 */}
         <form onSubmit={handleSend} className="px-4 py-3 border-t border-gray-100 flex gap-2 shrink-0">
           <input
             type="text"
             placeholder="返信を入力..."
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => { setInput(e.target.value); setSendError('') }}
             maxLength={500}
             className="flex-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition"
           />
@@ -208,7 +276,7 @@ export default function ThreadPage() {
             disabled={!input.trim() || sending}
             className="bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white rounded-xl px-4 py-2.5 transition font-medium text-sm shrink-0"
           >
-            送信
+            {sending ? '...' : '送信'}
           </button>
         </form>
       </div>
