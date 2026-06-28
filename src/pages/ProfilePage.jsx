@@ -7,27 +7,33 @@ import PostCard from '../components/PostCard'
 
 
 // ---- ストレージ SQL ガイド ----
-const STORAGE_SQL = `-- Supabase SQL Editor で実行してください
+// ON CONFLICT DO NOTHING ではなく DO UPDATE を使う
+//   → 既存バケットが private 設定でも public に強制更新される
+const STORAGE_SQL = `-- Supabase SQL Editor で実行してください（全部まとめて実行OK）
 
--- avatarsバケット作成（公開設定）
+-- ① avatarsバケット（なければ作成、あれば public=true に更新）
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', true)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET public = true;
 
--- avatarsストレージポリシー（全操作を許可）
-DROP POLICY IF EXISTS "avatars_allow_all" ON storage.objects;
-CREATE POLICY "avatars_allow_all" ON storage.objects
-FOR ALL USING (bucket_id = 'avatars') WITH CHECK (bucket_id = 'avatars');
-
--- coversバケット作成（公開設定）
+-- ② coversバケット（なければ作成、あれば public=true に更新）
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('covers', 'covers', true)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET public = true;
 
--- coversストレージポリシー（全操作を許可）
+-- ③ avatars ポリシー（匿名ユーザーの全操作を許可）
+DROP POLICY IF EXISTS "avatars_allow_all" ON storage.objects;
+CREATE POLICY "avatars_allow_all" ON storage.objects
+  FOR ALL TO public
+  USING (bucket_id = 'avatars')
+  WITH CHECK (bucket_id = 'avatars');
+
+-- ④ covers ポリシー（匿名ユーザーの全操作を許可）
 DROP POLICY IF EXISTS "covers_allow_all" ON storage.objects;
 CREATE POLICY "covers_allow_all" ON storage.objects
-FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
+  FOR ALL TO public
+  USING (bucket_id = 'covers')
+  WITH CHECK (bucket_id = 'covers');`
 
 // ---- 画像クロップ・位置調整モーダル ----
 // ファイル選択後にドラッグ位置調整 + ズームスライダー → Canvas でクロップして Blob を返す
@@ -357,11 +363,25 @@ function CoverUpload({ user, onUploaded }) {
     setPendingFile(null)
     setUploading(true)
     setUploadError('')
+
+    // ── バケット疎通チェック（アップロード前に存在・権限を確認）──
+    // "Bucket not found" は①バケット未存在 ②RLSポリシー未設定 どちらでも発生する
+    const { error: listErr } = await supabase.storage.from('covers').list('', { limit: 1 })
+    if (listErr) {
+      console.error('[Storage] coversバケット疎通失敗:', listErr.message, listErr)
+      const msg = listErr.message ?? ''
+      const isBucketErr = msg.toLowerCase().includes('bucket') || msg.includes('404')
+      setUploadError(isBucketErr ? 'BUCKET_NOT_FOUND' : `アクセスエラー: ${msg}`)
+      setUploading(false)
+      return
+    }
+
+    // ── 実際のアップロード ──
     const { error: uploadErr } = await supabase.storage
       .from('covers')
       .upload(`${user.id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' })
     if (uploadErr) {
-      console.error('[Storage] カバーアップロード失敗:', uploadErr.message)
+      console.error('[Storage] カバーアップロード失敗:', uploadErr.message, uploadErr)
       setUploadError(uploadErr.message)
       setUploading(false)
       return
@@ -397,13 +417,42 @@ function CoverUpload({ user, onUploaded }) {
         </label>
 
         {uploadError && (
-          <div className="mx-4 mt-2 bg-white border border-red-200 rounded-2xl shadow-lg p-3 space-y-2">
-            <p className="text-xs font-semibold text-red-600">⚠ カバー写真アップロード失敗</p>
-            <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
-            <details className="text-xs">
-              <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQL</summary>
-              <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{STORAGE_SQL}</pre>
-            </details>
+          <div className="mx-4 mt-2 bg-white border border-red-200 rounded-2xl shadow-lg p-4 space-y-3">
+            {uploadError === 'BUCKET_NOT_FOUND' ? (
+              <>
+                <p className="text-xs font-bold text-red-600">⚠ "covers" バケットが見つかりません</p>
+                <p className="text-xs text-gray-600 leading-relaxed">
+                  Supabase の Storage に <span className="font-semibold text-gray-800">covers</span> バケットが存在しないか、
+                  アップロードポリシーが未設定です。<br />
+                  以下の <strong>どちらか</strong> の方法で設定してください。
+                </p>
+                {/* ── 方法1: Dashboard ── */}
+                <div className="rounded-xl bg-indigo-50 border border-indigo-100 p-3 space-y-1">
+                  <p className="text-xs font-semibold text-indigo-700">方法① Dashboard（推奨）</p>
+                  <ol className="text-xs text-indigo-600 space-y-0.5 list-decimal list-inside">
+                    <li>Supabase Dashboard → <strong>Storage</strong> → <strong>New bucket</strong></li>
+                    <li>名前: <code className="bg-indigo-100 px-1 rounded">covers</code>、<strong>Public bucket</strong> にチェック</li>
+                    <li>Create をクリック</li>
+                  </ol>
+                </div>
+                {/* ── 方法2: SQL ── */}
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-gray-500 hover:text-gray-700 font-medium">
+                    方法② SQL Editor で実行（クリックで表示）
+                  </summary>
+                  <pre className="mt-2 bg-gray-900 text-green-300 text-[9px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
+                </details>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-bold text-red-600">⚠ カバー写真アップロード失敗</p>
+                <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQL</summary>
+                  <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{STORAGE_SQL}</pre>
+                </details>
+              </>
+            )}
             <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
           </div>
         )}
@@ -533,13 +582,14 @@ CREATE POLICY "post_replies_allow_all" ON public.post_replies FOR ALL USING (tru
 -- ④ usersテーブルにcover_urlカラムを追加
 ALTER TABLE public.users ADD COLUMN IF NOT EXISTS cover_url TEXT;
 
--- ⑤ coversストレージバケット
+-- ⑤ coversストレージバケット（既存でも public=true に更新）
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('covers', 'covers', true)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE SET public = true;
 DROP POLICY IF EXISTS "covers_allow_all" ON storage.objects;
 CREATE POLICY "covers_allow_all" ON storage.objects
-FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
+  FOR ALL TO public
+  USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
 
 // ---- メイン ----
 const inputCls = 'w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition bg-white'
