@@ -5,6 +5,22 @@ import { useUser } from '../context/UserContext'
 import { PREFECTURES, GENDERS, GENDER_LABEL } from '../constants/profile'
 import { triggerPushNotification } from '../hooks/usePushNotifications'
 
+const DM_REQUESTS_SQL = `-- Supabase SQL Editor で実行してください
+CREATE TABLE IF NOT EXISTS public.dm_requests (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  sender_id       UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  sender_nickname TEXT        NOT NULL,
+  receiver_id     UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  status          TEXT        NOT NULL DEFAULT 'pending'
+                              CHECK (status IN ('pending','accepted','rejected')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (sender_id, receiver_id)
+);
+ALTER TABLE public.dm_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "dm_requests_allow_all" ON public.dm_requests
+  FOR ALL USING (true) WITH CHECK (true);
+ALTER PUBLICATION supabase_realtime ADD TABLE public.dm_requests;`
+
 function isOnline(lastSeen) {
   if (!lastSeen) return false
   return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000
@@ -276,7 +292,8 @@ export default function UsersPage() {
   const [fetchError, setFetchError] = useState(null)
   const [filters, setFilters]     = useState({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
   // { [receiverId]: 'pending'|'accepted'|'rejected' }
-  const [myRequests, setMyRequests] = useState({})
+  const [myRequests, setMyRequests]   = useState({})
+  const [requestError, setRequestError] = useState('')
 
   const fetchUsers = useCallback(async () => {
     setLoading(true)
@@ -320,16 +337,19 @@ export default function UsersPage() {
       { sender_id: user.id, sender_nickname: user.nickname, receiver_id: targetId, status: 'pending' },
       { onConflict: 'sender_id,receiver_id' }
     )
-    if (!error) {
-      triggerPushNotification({
-        receiverId: targetId,
-        senderName: user.nickname,
-        senderId: user.id,
-        content: 'DMの申請が届いています',
-      })
-    } else {
-      setMyRequests((prev) => ({ ...prev, [targetId]: undefined }))
+    if (error) {
+      console.error('[dm_requests] upsert失敗:', error.code, error.message)
+      setMyRequests((prev) => ({ ...prev, [targetId]: undefined })) // 楽観的更新を戻す
+      setRequestError(`申請の送信に失敗しました: ${error.message}`)
+      setTimeout(() => setRequestError(''), 8000)
+      return
     }
+    triggerPushNotification({
+      receiverId: targetId,
+      senderName: user.nickname,
+      senderId: user.id,
+      content: 'DMの申請が届いています',
+    })
   }
 
   const handleFilterChange = (key, value) => {
@@ -368,6 +388,14 @@ export default function UsersPage() {
       {anyError && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
           <p className="font-semibold">⚠ エラー: {anyError}</p>
+        </div>
+      )}
+
+      {requestError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 space-y-1">
+          <p className="font-semibold">⚠ {requestError}</p>
+          <p className="text-red-400">dm_requestsテーブルが存在しない可能性があります。下記SQLをSupabaseで実行してください。</p>
+          <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto mt-1 whitespace-pre-wrap leading-relaxed">{DM_REQUESTS_SQL}</pre>
         </div>
       )}
 

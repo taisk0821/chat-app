@@ -16,9 +16,10 @@ export default function UserProfilePage() {
   const navigate = useNavigate()
   const [profile, setProfile]             = useState(null)
   const [loading, setLoading]             = useState(true)
-  const [requestStatus, setRequestStatus] = useState(null) // null|'none'|'pending'|'accepted'|'rejected'
+  const [requestStatus, setRequestStatus]   = useState(null) // null|'none'|'pending'|'accepted'|'rejected'
   const [requestLoading, setRequestLoading] = useState(false)
-  const [reportOpen, setReportOpen]       = useState(false)
+  const [dmRequestError, setDmRequestError] = useState('')
+  const [reportOpen, setReportOpen]         = useState(false)
   // フォロー
   const [isFollowing, setIsFollowing]       = useState(false)
   const [followersCount, setFollowersCount] = useState(0)
@@ -85,8 +86,8 @@ export default function UserProfilePage() {
   const sendDMRequest = async () => {
     if (!profile) return
     setRequestLoading(true)
-    // upsert で「却下後の再申請」も対応（status を pending に戻す）
-    await supabase.from('dm_requests').upsert(
+    setDmRequestError('')
+    const { error } = await supabase.from('dm_requests').upsert(
       {
         sender_id: user.id,
         sender_nickname: user.nickname,
@@ -95,8 +96,13 @@ export default function UserProfilePage() {
       },
       { onConflict: 'sender_id,receiver_id' }
     )
-    setRequestStatus('pending')
     setRequestLoading(false)
+    if (error) {
+      console.error('[dm_requests] upsert失敗:', error.code, error.message)
+      setDmRequestError(`申請の送信に失敗しました: ${error.message}`)
+      return
+    }
+    setRequestStatus('pending')
     // プッシュ通知
     triggerPushNotification({
       receiverId: profile.id,
@@ -256,6 +262,13 @@ export default function UserProfilePage() {
             <div className="mb-5">
               <p className="text-xs font-semibold text-gray-500 mb-1">趣味</p>
               <p className="text-sm text-gray-700">{profile.hobbies}</p>
+            </div>
+          )}
+
+          {dmRequestError && (
+            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 space-y-1">
+              <p className="font-semibold">⚠ {dmRequestError}</p>
+              <p className="text-red-400">dm_requestsテーブルが存在しない可能性があります。管理者にお知らせください。</p>
             </div>
           )}
 

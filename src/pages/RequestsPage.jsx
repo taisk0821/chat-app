@@ -14,21 +14,44 @@ function Avatar({ nickname, avatarUrl }) {
   )
 }
 
+const DM_REQUESTS_SQL = `CREATE TABLE IF NOT EXISTS public.dm_requests (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  sender_id       UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  sender_nickname TEXT        NOT NULL,
+  receiver_id     UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  status          TEXT        NOT NULL DEFAULT 'pending'
+                              CHECK (status IN ('pending','accepted','rejected')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (sender_id, receiver_id)
+);
+ALTER TABLE public.dm_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "dm_requests_allow_all" ON public.dm_requests
+  FOR ALL USING (true) WITH CHECK (true);
+ALTER PUBLICATION supabase_realtime ADD TABLE public.dm_requests;`
+
 export default function RequestsPage() {
   const { user } = useUser()
   const navigate = useNavigate()
-  const [requests, setRequests] = useState([])
-  const [loading, setLoading]   = useState(true)
+  const [requests, setRequests]   = useState([])
+  const [loading, setLoading]     = useState(true)
+  const [tableError, setTableError] = useState('')
   // senderIdとアバターURLのマップ
   const [avatarMap, setAvatarMap] = useState({})
 
   const fetchRequests = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('dm_requests')
       .select('*')
       .eq('receiver_id', user.id)
       .eq('status', 'pending')
       .order('created_at', { ascending: false })
+    if (error) {
+      console.error('[dm_requests] fetch失敗:', error.code, error.message)
+      setTableError(error.message)
+      setLoading(false)
+      return
+    }
+    setTableError('')
     const reqs = data ?? []
     setRequests(reqs)
     setLoading(false)
@@ -75,7 +98,16 @@ export default function RequestsPage() {
         <p className="text-center text-gray-400 text-sm py-8">読み込み中...</p>
       )}
 
-      {!loading && requests.length === 0 && (
+      {tableError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 space-y-2">
+          <p className="font-semibold">⚠ dm_requestsテーブルが見つかりません</p>
+          <p className="text-red-500 font-mono break-all">{tableError}</p>
+          <p className="text-red-400">Supabase の SQL Editor で以下を実行してください：</p>
+          <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{DM_REQUESTS_SQL}</pre>
+        </div>
+      )}
+
+      {!loading && !tableError && requests.length === 0 && (
         <div className="text-center py-16">
           <p className="text-4xl mb-3">📭</p>
           <p className="text-gray-500 text-sm font-medium">申請はありません</p>
