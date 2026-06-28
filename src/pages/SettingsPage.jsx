@@ -565,7 +565,7 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
 
 export default function SettingsPage() {
   const navigate = useNavigate()
-  const { user, clearAccountStorage } = useUser()
+  const { user, logout, clearAccountStorage } = useUser()
 
   // プライバシーリスト
   const [blocks, setBlocks]         = useState([])
@@ -671,6 +671,13 @@ export default function SettingsPage() {
     setInquirySent(true)
     setInquiryText('')
     setInquirySending(false)
+  }
+
+  // ── 退室（ログアウト・UUIDは保持）──────────────────────────
+
+  const handleLogout = () => {
+    logout()
+    navigate('/', { replace: true })
   }
 
   // ── キャッシュクリア ─────────────────────────────────────
@@ -850,6 +857,12 @@ export default function SettingsPage() {
       {/* ─── その他 ─── */}
       <Section title="その他">
         <Row
+          label="退室する"
+          desc="ニックネーム入力画面に戻ります（データは保持されます）"
+          right={<Chevron />}
+          onClick={() => setModal('logout')}
+        />
+        <Row
           label="キャッシュクリア"
           desc="ローカルデータをすべて削除してログアウトします"
           right={<Chevron />}
@@ -870,6 +883,19 @@ export default function SettingsPage() {
       {modal === 'privacy'   && <TextModal title="プライバシーポリシー" body={PRIVACY_TEXT}    onClose={() => setModal(null)} />}
       {modal === 'copyright' && <TextModal title="著作権情報"          body={COPYRIGHT_TEXT} onClose={() => setModal(null)} />}
       {modal === 'sql'       && <SetupSQLModal onClose={() => setModal(null)} />}
+
+      {modal === 'logout' && (
+        <ConfirmModal
+          icon="🚪"
+          iconBg="bg-gray-100"
+          title="退室しますか？"
+          desc="ニックネーム入力画面に戻ります。アカウントとデータは保持されるので、同じニックネームで再度ログインできます。"
+          confirmLabel="退室する"
+          confirmClass="bg-gray-700 hover:bg-gray-800"
+          onConfirm={handleLogout}
+          onClose={() => setModal(null)}
+        />
+      )}
 
       {modal === 'clear' && (
         <ConfirmModal
