@@ -6,6 +6,12 @@ import { PREFECTURES, GENDERS } from '../constants/profile'
 import PostCard from '../components/PostCard'
 
 
+// ---- cover_url カラム追加 SQL ----
+const COVER_URL_SQL = `-- Supabase SQL Editor で実行してください
+-- cover_url カラムが users テーブルにない場合に追加
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS cover_url TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`
+
 // ---- ストレージ SQL ガイド ----
 // ON CONFLICT DO NOTHING ではなく DO UPDATE を使う
 //   → 既存バケットが private 設定でも public に強制更新される
@@ -277,17 +283,33 @@ function AvatarUpload({ user, onUploaded }) {
     setPendingFile(null)
     setUploading(true)
     setUploadError('')
+
+    const path = `${user.id}.jpg`
+    console.log('[Avatar] Storage upload 開始 bucket=avatars path=', path, 'size=', blob?.size)
+
     const { error: uploadErr } = await supabase.storage
       .from('avatars')
-      .upload(`${user.id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' })
+      .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
     if (uploadErr) {
-      console.error('[Storage] アバターアップロード失敗:', uploadErr.message)
+      console.error('[Avatar] Storage upload 失敗:', uploadErr.message, uploadErr)
       setUploadError(uploadErr.message)
       setUploading(false)
       return
     }
-    const { data } = supabase.storage.from('avatars').getPublicUrl(`${user.id}.jpg`)
-    await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
+
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+    const url = `${data.publicUrl}?t=${Date.now()}`
+    console.log('[Avatar] Storage 保存成功 URL=', url)
+
+    // DB 保存（エラーを UI に表示）
+    const result = await onUploaded(url)
+    if (result?.ok === false) {
+      console.error('[Avatar] DB 保存失敗:', result.error)
+      setUploadError(`DB保存エラー: ${result.error}`)
+      setUploading(false)
+      return
+    }
+    console.log('[Avatar] DB 保存成功')
     setUploading(false)
   }
 
@@ -364,30 +386,35 @@ function CoverUpload({ user, onUploaded }) {
     setUploading(true)
     setUploadError('')
 
-    // ── バケット疎通チェック（アップロード前に存在・権限を確認）──
-    // "Bucket not found" は①バケット未存在 ②RLSポリシー未設定 どちらでも発生する
-    const { error: listErr } = await supabase.storage.from('covers').list('', { limit: 1 })
-    if (listErr) {
-      console.error('[Storage] coversバケット疎通失敗:', listErr.message, listErr)
-      const msg = listErr.message ?? ''
-      const isBucketErr = msg.toLowerCase().includes('bucket') || msg.includes('404')
-      setUploadError(isBucketErr ? 'BUCKET_NOT_FOUND' : `アクセスエラー: ${msg}`)
+    const path = `${user.id}.jpg`
+    console.log('[Cover] Storage upload 開始 bucket=covers path=', path, 'size=', blob?.size)
+
+    // ── Storage アップロード ──
+    const { error: uploadErr } = await supabase.storage
+      .from('covers')
+      .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
+    if (uploadErr) {
+      console.error('[Cover] Storage upload 失敗:', uploadErr.message, uploadErr)
+      const isBucketErr = uploadErr.message?.toLowerCase().includes('bucket') ||
+                          uploadErr.message?.includes('404')
+      setUploadError(isBucketErr ? 'BUCKET_NOT_FOUND' : uploadErr.message)
       setUploading(false)
       return
     }
 
-    // ── 実際のアップロード ──
-    const { error: uploadErr } = await supabase.storage
-      .from('covers')
-      .upload(`${user.id}.jpg`, blob, { upsert: true, contentType: 'image/jpeg' })
-    if (uploadErr) {
-      console.error('[Storage] カバーアップロード失敗:', uploadErr.message, uploadErr)
-      setUploadError(uploadErr.message)
+    const { data } = supabase.storage.from('covers').getPublicUrl(path)
+    const url = `${data.publicUrl}?t=${Date.now()}`
+    console.log('[Cover] Storage 保存成功 URL=', url)
+
+    // ── DB 保存（cover_url カラムへの書き込み）──
+    const result = await onUploaded(url)
+    if (result?.ok === false) {
+      console.error('[Cover] DB 保存失敗:', result.error)
+      setUploadError(`DB保存エラー: ${result.error}`)
       setUploading(false)
       return
     }
-    const { data } = supabase.storage.from('covers').getPublicUrl(`${user.id}.jpg`)
-    await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
+    console.log('[Cover] DB 保存成功')
     setUploading(false)
   }
 
@@ -406,12 +433,24 @@ function CoverUpload({ user, onUploaded }) {
           {user.cover_url && (
             <img src={user.cover_url} alt="cover" className="absolute inset-0 w-full h-full object-cover" />
           )}
+          {/* アップロード中: 常に表示 / 通常時: hover で表示 */}
           <div className={`absolute inset-0 flex items-center justify-center transition ${
-            user.cover_url ? 'bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100' : 'opacity-100'
+            uploading
+              ? 'bg-black/50 opacity-100'
+              : user.cover_url
+                ? 'bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100'
+                : 'opacity-100'
           }`}>
-            <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
-              {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
-            </span>
+            {uploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-6 h-6 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                <span className="text-white text-xs font-medium">アップロード中...</span>
+              </div>
+            ) : (
+              <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
+                📷 カバー写真を変更
+              </span>
+            )}
           </div>
           <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={handleChange} />
         </label>
@@ -441,6 +480,21 @@ function CoverUpload({ user, onUploaded }) {
                     方法② SQL Editor で実行（クリックで表示）
                   </summary>
                   <pre className="mt-2 bg-gray-900 text-green-300 text-[9px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
+                </details>
+              </>
+            ) : uploadError.startsWith('DB保存エラー:') ? (
+              <>
+                <p className="text-xs font-bold text-red-600">⚠ DB保存に失敗しました</p>
+                <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+                <p className="text-xs text-gray-600">
+                  画像の Storage 保存は成功しましたが、<code className="bg-gray-100 px-1 rounded">users</code> テーブルの
+                  <code className="bg-gray-100 px-1 rounded">cover_url</code> カラムへの書き込みに失敗しました。
+                  以下のSQLを実行してカラムを追加してください。
+                </p>
+                <pre className="bg-gray-900 text-green-300 text-[9px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">{COVER_URL_SQL}</pre>
+                <details className="text-xs">
+                  <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQLも確認</summary>
+                  <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">{STORAGE_SQL}</pre>
                 </details>
               </>
             ) : (

@@ -176,21 +176,29 @@ export function UserProvider({ children }) {
   }
 
   const updateAvatar = async (avatarUrl) => {
-    if (!user) return
+    if (!user) return { ok: false, error: 'ユーザー未初期化' }
     const { error } = await supabase.from('users').update({ avatar_url: avatarUrl }).eq('id', user.id)
-    if (error) { console.error('[DB] updateAvatar失敗:', error.message); return }
+    if (error) {
+      console.error('[DB] updateAvatar失敗:', error.message, error)
+      return { ok: false, error: error.message }
+    }
     const updated = { ...user, avatar_url: avatarUrl }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
+    return { ok: true }
   }
 
   const updateCover = async (coverUrl) => {
-    if (!user) return
+    if (!user) return { ok: false, error: 'ユーザー未初期化' }
     const { error } = await supabase.from('users').update({ cover_url: coverUrl }).eq('id', user.id)
-    if (error) { console.error('[DB] updateCover失敗:', error.message); return }
+    if (error) {
+      console.error('[DB] updateCover失敗:', error.message, error)
+      return { ok: false, error: error.message }
+    }
     const updated = { ...user, cover_url: coverUrl }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
+    return { ok: true }
   }
 
   // Heartbeat: last_seen_at を 30 秒ごとに更新
