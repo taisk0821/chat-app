@@ -5,23 +5,6 @@ import { supabase } from '../supabaseClient'
 import { PREFECTURES, GENDERS } from '../constants/profile'
 import PostCard from '../components/PostCard'
 
-// ---- ヘルパー ----
-async function fetchEnrichedPosts(authorId, viewerId) {
-  const { data: raw } = await supabase
-    .from('posts').select('*').eq('author_id', authorId)
-    .order('created_at', { ascending: false }).limit(50)
-  if (!raw?.length) return []
-  const ids = raw.map((p) => p.id)
-  const [{ data: allLikes }, { data: myLikes }, { data: allReplies }] = await Promise.all([
-    supabase.from('post_likes').select('post_id').in('post_id', ids),
-    supabase.from('post_likes').select('post_id').in('post_id', ids).eq('user_id', viewerId),
-    supabase.from('post_replies').select('post_id').in('post_id', ids),
-  ])
-  const lc = {}; (allLikes ?? []).forEach((l) => { lc[l.post_id] = (lc[l.post_id] ?? 0) + 1 })
-  const liked = new Set((myLikes ?? []).map((l) => l.post_id))
-  const rc = {}; (allReplies ?? []).forEach((r) => { rc[r.post_id] = (rc[r.post_id] ?? 0) + 1 })
-  return raw.map((p) => ({ ...p, like_count: lc[p.id] ?? 0, liked: liked.has(p.id), reply_count: rc[p.id] ?? 0 }))
-}
 
 // ---- アバターアップロード ----
 function AvatarUpload({ user, onUploaded }) {
@@ -176,6 +159,54 @@ function DeleteAccountModal({ user, onClose, onDeleted }) {
   )
 }
 
+// ---- SQL ----
+const POSTS_SQL = `-- Supabase SQL Editor で実行してください
+
+-- ① postsテーブル（ツイート）
+CREATE TABLE IF NOT EXISTS public.posts (
+  id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  author_id         UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  author_nickname   TEXT        NOT NULL,
+  author_avatar_url TEXT,
+  content           TEXT        NOT NULL,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "posts_allow_all" ON public.posts FOR ALL USING (true) WITH CHECK (true);
+
+-- ② post_likesテーブル（いいね）
+CREATE TABLE IF NOT EXISTS public.post_likes (
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id    UUID        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  user_id    UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (post_id, user_id)
+);
+ALTER TABLE public.post_likes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "post_likes_allow_all" ON public.post_likes FOR ALL USING (true) WITH CHECK (true);
+
+-- ③ post_repliesテーブル（返信）
+CREATE TABLE IF NOT EXISTS public.post_replies (
+  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id         UUID        NOT NULL REFERENCES public.posts(id) ON DELETE CASCADE,
+  author_id       UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  author_nickname TEXT        NOT NULL,
+  content         TEXT        NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.post_replies ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "post_replies_allow_all" ON public.post_replies FOR ALL USING (true) WITH CHECK (true);
+
+-- ④ coversストレージバケット（カバー写真）
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('covers', 'covers', true)
+ON CONFLICT (id) DO NOTHING;
+CREATE POLICY "covers_allow_all" ON storage.objects
+FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');
+
+-- ⑤ usersテーブルにcover_urlカラムを追加
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS cover_url TEXT;`
+
 // ---- メイン ----
 const inputCls = 'w-full mt-1 border border-gray-200 rounded-xl px-4 py-2.5 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 transition bg-white'
 
@@ -196,10 +227,12 @@ export default function ProfilePage() {
   const [saveError, setSaveError]     = useState('')
 
   // 投稿
-  const [postInput, setPostInput]   = useState('')
-  const [posting, setPosting]       = useState(false)
-  const [posts, setPosts]           = useState([])
+  const [postInput, setPostInput]     = useState('')
+  const [posting, setPosting]         = useState(false)
+  const [postError, setPostError]     = useState('')
+  const [posts, setPosts]             = useState([])
   const [postsLoading, setPostsLoading] = useState(true)
+  const [postsError, setPostsError]   = useState('')
 
   // フォロー数
   const [followersCount, setFollowersCount] = useState(0)
@@ -210,8 +243,28 @@ export default function ProfilePage() {
 
   const loadPosts = useCallback(async () => {
     setPostsLoading(true)
-    const enriched = await fetchEnrichedPosts(user.id, user.id)
-    setPosts(enriched)
+    setPostsError('')
+    // まず posts テーブルの存在を確認しながら取得
+    const { data: raw, error: fetchErr } = await supabase
+      .from('posts').select('*').eq('author_id', user.id)
+      .order('created_at', { ascending: false }).limit(50)
+    if (fetchErr) {
+      console.error('[posts] fetch失敗:', fetchErr.code, fetchErr.message)
+      setPostsError(fetchErr.message)
+      setPostsLoading(false)
+      return
+    }
+    if (!raw?.length) { setPosts([]); setPostsLoading(false); return }
+    const ids = raw.map((p) => p.id)
+    const [{ data: allLikes }, { data: myLikes }, { data: allReplies }] = await Promise.all([
+      supabase.from('post_likes').select('post_id').in('post_id', ids),
+      supabase.from('post_likes').select('post_id').in('post_id', ids).eq('user_id', user.id),
+      supabase.from('post_replies').select('post_id').in('post_id', ids),
+    ])
+    const lc = {}; (allLikes ?? []).forEach((l) => { lc[l.post_id] = (lc[l.post_id] ?? 0) + 1 })
+    const liked = new Set((myLikes ?? []).map((l) => l.post_id))
+    const rc = {}; (allReplies ?? []).forEach((r) => { rc[r.post_id] = (rc[r.post_id] ?? 0) + 1 })
+    setPosts(raw.map((p) => ({ ...p, like_count: lc[p.id] ?? 0, liked: liked.has(p.id), reply_count: rc[p.id] ?? 0 })))
     setPostsLoading(false)
   }, [user.id])
 
@@ -242,16 +295,22 @@ export default function ProfilePage() {
     const text = postInput.trim()
     if (!text || posting) return
     setPosting(true)
+    setPostError('')
     const { data, error } = await supabase.from('posts').insert({
       author_id: user.id,
       author_nickname: user.nickname,
       author_avatar_url: user.avatar_url ?? null,
       content: text,
     }).select().single()
-    if (!error && data) {
-      setPosts((prev) => [{ ...data, like_count: 0, liked: false, reply_count: 0 }, ...prev])
-      setPostInput('')
+    if (error) {
+      console.error('[posts] insert失敗:', error.code, error.message)
+      setPostError(error.message)
+      setPosting(false)
+      return // 入力はクリアしない
     }
+    // 成功時のみ入力クリアしてタイムラインに追加
+    setPosts((prev) => [{ ...data, like_count: 0, liked: false, reply_count: 0 }, ...prev])
+    setPostInput('')
     setPosting(false)
   }
 
@@ -397,7 +456,7 @@ export default function ProfilePage() {
               <div className="flex-1">
                 <textarea
                   value={postInput}
-                  onChange={(e) => setPostInput(e.target.value)}
+                  onChange={(e) => { setPostInput(e.target.value); setPostError('') }}
                   placeholder="いまどうしてる？"
                   maxLength={280}
                   rows={2}
@@ -409,11 +468,24 @@ export default function ProfilePage() {
                   </span>
                   <button type="submit" disabled={!postInput.trim() || posting}
                     className="bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white font-semibold rounded-full px-5 py-1.5 text-sm transition">
-                    {posting ? '...' : '投稿'}
+                    {posting ? '投稿中...' : '投稿'}
                   </button>
                 </div>
               </div>
             </div>
+            {/* 投稿エラー */}
+            {postError && (
+              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2">
+                <p className="text-xs font-semibold text-red-700">⚠ 投稿に失敗しました</p>
+                <p className="text-xs text-red-500 font-mono break-all">{postError}</p>
+                <p className="text-xs text-red-400">postsテーブルが存在しない場合は以下のSQLを実行してください：</p>
+                <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">{POSTS_SQL}</pre>
+                <button type="button" onClick={() => { setPostError(''); loadPosts() }}
+                  className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg transition">
+                  再試行
+                </button>
+              </div>
+            )}
           </form>
         )}
 
@@ -422,7 +494,20 @@ export default function ProfilePage() {
           {postsLoading && (
             <p className="text-center text-gray-400 text-sm py-6">読み込み中...</p>
           )}
-          {!postsLoading && posts.length === 0 && (
+          {/* フェッチエラー */}
+          {!postsLoading && postsError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-red-700">⚠ 投稿の読み込みに失敗しました</p>
+              <p className="text-xs text-red-500 font-mono break-all">{postsError}</p>
+              <p className="text-xs text-red-400">Supabase SQL Editor で以下を実行してください：</p>
+              <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed">{POSTS_SQL}</pre>
+              <button onClick={loadPosts}
+                className="text-xs bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg transition">
+                再試行
+              </button>
+            </div>
+          )}
+          {!postsLoading && !postsError && posts.length === 0 && (
             <div className="text-center py-10">
               <p className="text-3xl mb-2">✍️</p>
               <p className="text-gray-500 text-sm">まだ投稿がありません</p>

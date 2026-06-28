@@ -11,22 +11,6 @@ function isOnline(lastSeen) {
   return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000
 }
 
-async function fetchEnrichedPosts(authorId, viewerId) {
-  const { data: raw } = await supabase
-    .from('posts').select('*').eq('author_id', authorId)
-    .order('created_at', { ascending: false }).limit(50)
-  if (!raw?.length) return []
-  const ids = raw.map((p) => p.id)
-  const [{ data: allLikes }, { data: myLikes }, { data: allReplies }] = await Promise.all([
-    supabase.from('post_likes').select('post_id').in('post_id', ids),
-    supabase.from('post_likes').select('post_id').in('post_id', ids).eq('user_id', viewerId),
-    supabase.from('post_replies').select('post_id').in('post_id', ids),
-  ])
-  const lc = {}; (allLikes ?? []).forEach((l) => { lc[l.post_id] = (lc[l.post_id] ?? 0) + 1 })
-  const liked = new Set((myLikes ?? []).map((l) => l.post_id))
-  const rc = {}; (allReplies ?? []).forEach((r) => { rc[r.post_id] = (rc[r.post_id] ?? 0) + 1 })
-  return raw.map((p) => ({ ...p, like_count: lc[p.id] ?? 0, liked: liked.has(p.id), reply_count: rc[p.id] ?? 0 }))
-}
 
 export default function UserProfilePage() {
   const { userId } = useParams()
@@ -45,6 +29,7 @@ export default function UserProfilePage() {
   const [followLoading, setFollowLoading]   = useState(false)
   const [posts, setPosts]                   = useState([])
   const [postsLoading, setPostsLoading]     = useState(true)
+  const [postsError, setPostsError]         = useState('')
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -75,8 +60,27 @@ export default function UserProfilePage() {
   const loadPosts = useCallback(async () => {
     if (!profile) return
     setPostsLoading(true)
-    const enriched = await fetchEnrichedPosts(profile.id, user.id)
-    setPosts(enriched)
+    setPostsError('')
+    const { data: raw, error: fetchErr } = await supabase
+      .from('posts').select('*').eq('author_id', profile.id)
+      .order('created_at', { ascending: false }).limit(50)
+    if (fetchErr) {
+      console.error('[posts] fetch失敗:', fetchErr.code, fetchErr.message)
+      setPostsError(fetchErr.message)
+      setPostsLoading(false)
+      return
+    }
+    if (!raw?.length) { setPosts([]); setPostsLoading(false); return }
+    const ids = raw.map((p) => p.id)
+    const [{ data: allLikes }, { data: myLikes }, { data: allReplies }] = await Promise.all([
+      supabase.from('post_likes').select('post_id').in('post_id', ids),
+      supabase.from('post_likes').select('post_id').in('post_id', ids).eq('user_id', user.id),
+      supabase.from('post_replies').select('post_id').in('post_id', ids),
+    ])
+    const lc = {}; (allLikes ?? []).forEach((l) => { lc[l.post_id] = (lc[l.post_id] ?? 0) + 1 })
+    const liked = new Set((myLikes ?? []).map((l) => l.post_id))
+    const rc = {}; (allReplies ?? []).forEach((r) => { rc[r.post_id] = (rc[r.post_id] ?? 0) + 1 })
+    setPosts(raw.map((p) => ({ ...p, like_count: lc[p.id] ?? 0, liked: liked.has(p.id), reply_count: rc[p.id] ?? 0 })))
     setPostsLoading(false)
   }, [profile?.id, user.id])
 
@@ -290,7 +294,14 @@ export default function UserProfilePage() {
           {postsLoading && (
             <p className="text-center text-gray-400 text-sm py-6">読み込み中...</p>
           )}
-          {!postsLoading && posts.length === 0 && (
+          {!postsLoading && postsError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 space-y-2">
+              <p className="text-xs font-semibold text-red-700">⚠ 投稿の読み込みに失敗しました</p>
+              <p className="text-xs text-red-500 font-mono break-all">{postsError}</p>
+              <p className="text-xs text-red-400">postsテーブルが存在しない可能性があります。管理者にご連絡ください。</p>
+            </div>
+          )}
+          {!postsLoading && !postsError && posts.length === 0 && (
             <div className="text-center py-10">
               <p className="text-3xl mb-2">📭</p>
               <p className="text-gray-500 text-sm">まだ投稿がありません</p>
