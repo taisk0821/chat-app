@@ -21,6 +21,19 @@ CREATE POLICY "dm_requests_allow_all" ON public.dm_requests
   FOR ALL USING (true) WITH CHECK (true);
 ALTER PUBLICATION supabase_realtime ADD TABLE public.dm_requests;`
 
+const MATCHES_SQL = `-- Supabase SQL Editor で実行してください
+CREATE TABLE IF NOT EXISTS public.matches (
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user1_id   UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  user2_id   UUID        NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  status     TEXT        NOT NULL DEFAULT 'active'
+                          CHECK (status IN ('active', 'unmatched')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE public.matches ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "matches_allow_all" ON public.matches;
+CREATE POLICY "matches_allow_all" ON public.matches FOR ALL USING (true) WITH CHECK (true);`
+
 function isOnline(lastSeen) {
   if (!lastSeen) return false
   return Date.now() - new Date(lastSeen).getTime() < 5 * 60 * 1000
@@ -37,6 +50,135 @@ function Avatar({ u }) {
   )
 }
 
+// ---- ランダムマッチングパネル ----
+function RandomMatchPanel({ user, onMatch }) {
+  const navigate = useNavigate()
+  const [matching, setMatching]   = useState(false)
+  const [matchMsg, setMatchMsg]   = useState('')
+  const [matchError, setMatchError] = useState('')
+  const [matchSQL, setMatchSQL]   = useState(false)
+
+  const handleMatch = async () => {
+    setMatching(true)
+    setMatchMsg('')
+    setMatchError('')
+    setMatchSQL(false)
+
+    // オンラインユーザー（5分以内）を取得
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+    const { data: onlineUsers, error: fetchErr } = await supabase
+      .from('users')
+      .select('id, nickname, is_private, avatar_url, last_seen_at')
+      .neq('id', user.id)
+      .gte('last_seen_at', since)
+
+    if (fetchErr) {
+      setMatchError(`ユーザー取得に失敗しました: ${fetchErr.message}`)
+      setMatching(false)
+      return
+    }
+
+    if (!onlineUsers?.length) {
+      setMatchError('現在オンラインのユーザーがいません')
+      setMatching(false)
+      return
+    }
+
+    // 既にアクティブマッチ済みのユーザーを除外
+    const { data: myMatches, error: matchFetchErr } = await supabase
+      .from('matches')
+      .select('user1_id, user2_id')
+      .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`)
+      .eq('status', 'active')
+
+    if (matchFetchErr) {
+      // matchesテーブルがない可能性
+      setMatchError(`マッチ情報取得に失敗: ${matchFetchErr.message}`)
+      setMatchSQL(true)
+      setMatching(false)
+      return
+    }
+
+    const matchedIds = new Set()
+    ;(myMatches ?? []).forEach((m) => {
+      matchedIds.add(m.user1_id === user.id ? m.user2_id : m.user1_id)
+    })
+
+    const candidates = onlineUsers.filter((u) => !matchedIds.has(u.id))
+
+    if (!candidates.length) {
+      setMatchError('マッチできる新しいオンラインユーザーがいません（全員とマッチ済み）')
+      setMatching(false)
+      return
+    }
+
+    // ランダムに1人選ぶ
+    const partner = candidates[Math.floor(Math.random() * candidates.length)]
+
+    // matchesテーブルに保存
+    const { error: insertErr } = await supabase.from('matches').insert({
+      user1_id: user.id,
+      user2_id: partner.id,
+      status: 'active',
+    })
+
+    if (insertErr) {
+      setMatchError(`マッチングに失敗しました: ${insertErr.message}`)
+      setMatchSQL(true)
+      setMatching(false)
+      return
+    }
+
+    // 相手にプッシュ通知
+    triggerPushNotification({
+      receiverId: partner.id,
+      senderName: user.nickname,
+      senderId: user.id,
+      content: `${user.nickname}さんからマッチングリクエストが届きました`,
+    })
+
+    setMatching(false)
+    onMatch(partner)
+    navigate(`/dm/${partner.id}`)
+  }
+
+  return (
+    <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-4 text-white shadow-md">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="font-bold text-sm">🎲 ランダムマッチング</p>
+          <p className="text-xs text-indigo-100 mt-0.5">オンラインのユーザーとランダムにマッチ！</p>
+        </div>
+        <button
+          onClick={handleMatch}
+          disabled={matching}
+          className="shrink-0 bg-white text-indigo-600 hover:bg-indigo-50 disabled:bg-white/60 font-bold text-sm px-4 py-2 rounded-xl transition"
+        >
+          {matching ? 'マッチ中...' : 'マッチする'}
+        </button>
+      </div>
+
+      {matchMsg && (
+        <p className="text-xs text-indigo-100 mt-2">{matchMsg}</p>
+      )}
+
+      {matchError && (
+        <div className="mt-2 space-y-1">
+          <p className="text-xs text-red-200 font-medium">⚠ {matchError}</p>
+          {matchSQL && (
+            <>
+              <p className="text-xs text-indigo-200">matchesテーブルが必要です：</p>
+              <pre className="bg-black/30 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap">
+                {MATCHES_SQL}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ---- 絞り込みパネル ----
 function FilterPanel({ filters, onChange, onReset, count }) {
   const [open, setOpen] = useState(false)
@@ -44,7 +186,6 @@ function FilterPanel({ filters, onChange, onReset, count }) {
 
   return (
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-      {/* トグルヘッダー */}
       <button
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700"
@@ -55,9 +196,7 @@ function FilterPanel({ filters, onChange, onReset, count }) {
           </svg>
           絞り込み
           {hasFilter && (
-            <span className="bg-indigo-500 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">
-              ON
-            </span>
+            <span className="bg-indigo-500 text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 leading-none">ON</span>
           )}
         </span>
         <span className="flex items-center gap-2">
@@ -69,71 +208,47 @@ function FilterPanel({ filters, onChange, onReset, count }) {
         </span>
       </button>
 
-      {/* フィルター詳細 */}
       {open && (
         <div className="border-t border-gray-100 px-4 py-4 space-y-4">
-          {/* 性別 */}
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1.5 block">性別</label>
             <div className="flex flex-wrap gap-2">
               {[{ value: '', label: 'すべて' }, ...GENDERS].map((g) => (
-                <button
-                  key={g.value}
-                  onClick={() => onChange('gender', g.value)}
+                <button key={g.value} onClick={() => onChange('gender', g.value)}
                   className={`text-xs px-3 py-1.5 rounded-full border transition font-medium ${
                     filters.gender === g.value
                       ? 'bg-indigo-500 text-white border-indigo-500'
                       : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'
-                  }`}
-                >
+                  }`}>
                   {g.label}
                 </button>
               ))}
             </div>
           </div>
-
-          {/* 年齢範囲 */}
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1.5 block">年齢</label>
             <div className="flex items-center gap-2">
-              <input
-                type="number" min={0} max={120} placeholder="下限"
-                value={filters.ageMin}
+              <input type="number" min={0} max={120} placeholder="下限" value={filters.ageMin}
                 onChange={(e) => onChange('ageMin', e.target.value)}
-                className="w-20 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              />
+                className="w-20 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400" />
               <span className="text-sm text-gray-400">〜</span>
-              <input
-                type="number" min={0} max={120} placeholder="上限"
-                value={filters.ageMax}
+              <input type="number" min={0} max={120} placeholder="上限" value={filters.ageMax}
                 onChange={(e) => onChange('ageMax', e.target.value)}
-                className="w-20 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              />
+                className="w-20 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400" />
               <span className="text-sm text-gray-500">歳</span>
             </div>
           </div>
-
-          {/* 居住地 */}
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1.5 block">居住地</label>
-            <select
-              value={filters.prefecture}
-              onChange={(e) => onChange('prefecture', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
-            >
+            <select value={filters.prefecture} onChange={(e) => onChange('prefecture', e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white">
               <option value="">すべて</option>
-              {PREFECTURES.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
+              {PREFECTURES.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
-
-          {/* リセット */}
           {hasFilter && (
-            <button
-              onClick={onReset}
-              className="w-full text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-xl py-2 transition"
-            >
+            <button onClick={onReset}
+              className="w-full text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-xl py-2 transition">
               フィルターをリセット
             </button>
           )}
@@ -144,7 +259,6 @@ function FilterPanel({ filters, onChange, onReset, count }) {
 }
 
 // ---- ユーザーカード ----
-// requestStatus: undefined | 'pending' | 'accepted' | 'rejected'
 function UserCard({ u, me, requestStatus, onSendRequest }) {
   const navigate = useNavigate()
   const online = isOnline(u.last_seen_at)
@@ -154,84 +268,47 @@ function UserCard({ u, me, requestStatus, onSendRequest }) {
   if (u.gender && u.gender !== 'private') badges.push(GENDER_LABEL[u.gender])
   if (u.prefecture) badges.push(u.prefecture)
 
-  // 右側ボタンの設定
   const getButton = () => {
     if (!u.is_private) {
-      return {
-        label: '話しかける',
-        cls: 'bg-indigo-500 hover:bg-indigo-600 text-white',
-        disabled: false,
-        onClick: () => navigate(`/dm/${u.id}`),
-      }
+      return { label: '話しかける', cls: 'bg-indigo-500 hover:bg-indigo-600 text-white', disabled: false, onClick: () => navigate(`/dm/${u.id}`) }
     }
     if (requestStatus === 'accepted') {
-      return {
-        label: '💬 話しかける',
-        cls: 'bg-indigo-500 hover:bg-indigo-600 text-white',
-        disabled: false,
-        onClick: () => navigate(`/dm/${u.id}`),
-      }
+      return { label: '💬 話しかける', cls: 'bg-indigo-500 hover:bg-indigo-600 text-white', disabled: false, onClick: () => navigate(`/dm/${u.id}`) }
     }
     if (requestStatus === 'pending') {
-      return {
-        label: '🕐 申請済み',
-        cls: 'bg-gray-100 text-gray-400 cursor-not-allowed',
-        disabled: true,
-        onClick: () => {},
-      }
+      return { label: '🕐 申請済み', cls: 'bg-gray-100 text-gray-400 cursor-not-allowed', disabled: true, onClick: () => {} }
     }
-    // 未申請 or 拒否済み
-    return {
-      label: '🔒 申請する',
-      cls: 'border border-indigo-300 text-indigo-600 hover:bg-indigo-50',
-      disabled: false,
-      onClick: () => onSendRequest(u.id, u.nickname),
-    }
+    return { label: '🔒 申請する', cls: 'border border-indigo-300 text-indigo-600 hover:bg-indigo-50', disabled: false, onClick: () => onSendRequest(u.id, u.nickname) }
   }
 
   const btn = getButton()
 
   return (
     <div className="bg-white rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3">
-      <button
-        onClick={() => navigate(`/profile/${u.id}`)}
-        className="flex items-center gap-3 min-w-0 text-left flex-1 hover:opacity-80 transition"
-      >
+      <button onClick={() => navigate(`/profile/${u.id}`)}
+        className="flex items-center gap-3 min-w-0 text-left flex-1 hover:opacity-80 transition">
         <div className="relative shrink-0">
           <Avatar u={u} />
-          {online && (
-            <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-400 rounded-full border-2 border-white" />
-          )}
+          {online && <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-400 rounded-full border-2 border-white" />}
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-gray-800 text-sm">{u.nickname}</span>
-            {u.is_private && (
-              <span className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">🔒</span>
-            )}
-            {u.id === me.id && (
-              <span className="text-[10px] text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">あなた</span>
-            )}
-            {online && (
-              <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">オンライン</span>
-            )}
+            {u.is_private && <span className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">🔒</span>}
+            {u.id === me.id && <span className="text-[10px] text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full">あなた</span>}
+            {online && <span className="text-[10px] text-green-600 bg-green-50 px-1.5 py-0.5 rounded-full">オンライン</span>}
           </div>
           {badges.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap mt-1">
-              {badges.map((b) => (
-                <span key={b} className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">{b}</span>
-              ))}
+              {badges.map((b) => <span key={b} className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">{b}</span>)}
             </div>
           )}
           {u.bio && <p className="text-xs text-gray-400 mt-0.5 truncate">{u.bio}</p>}
         </div>
       </button>
       {u.id !== me.id && (
-        <button
-          onClick={btn.onClick}
-          disabled={btn.disabled}
-          className={`shrink-0 text-xs px-3 py-1.5 rounded-xl transition font-medium ${btn.cls}`}
-        >
+        <button onClick={btn.onClick} disabled={btn.disabled}
+          className={`shrink-0 text-xs px-3 py-1.5 rounded-xl transition font-medium ${btn.cls}`}>
           {btn.label}
         </button>
       )}
@@ -243,24 +320,19 @@ function UserCard({ u, me, requestStatus, onSendRequest }) {
 function DiagPanel({ user, onRetryRegister }) {
   const [result, setResult] = useState(null)
   const [running, setRunning] = useState(false)
-
   const run = async () => {
     setRunning(true)
     const out = {}
     const { data: rows, error: selErr } = await supabase.from('users').select('id, nickname, created_at').limit(10)
     out.select = selErr ? { error: `${selErr.code}: ${selErr.message}` } : { count: rows.length, rows }
     const { error: insErr } = await supabase.from('users').insert({
-      id: user.id, nickname: user.nickname, bio: user.bio || '', hobbies: user.hobbies || '',
-      last_seen_at: new Date().toISOString(),
+      id: user.id, nickname: user.nickname, bio: user.bio || '', hobbies: user.hobbies || '', last_seen_at: new Date().toISOString(),
     })
     if (insErr?.code === '23505') out.insert = '既に存在（正常）'
     else if (insErr) out.insert = { error: `${insErr.code}: ${insErr.message}` }
     else out.insert = '新規登録成功'
-    setResult(out)
-    setRunning(false)
-    onRetryRegister()
+    setResult(out); setRunning(false); onRetryRegister()
   }
-
   return (
     <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs space-y-2">
       <div className="flex items-center justify-between">
@@ -287,42 +359,30 @@ function DiagPanel({ user, onRetryRegister }) {
 export default function UsersPage() {
   const { user, dbError } = useUser()
   const navigate = useNavigate()
-  const [users, setUsers]         = useState([])
-  const [loading, setLoading]     = useState(true)
-  const [fetchError, setFetchError] = useState(null)
-  const [filters, setFilters]     = useState({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
-  // { [receiverId]: 'pending'|'accepted'|'rejected' }
+  const [users, setUsers]             = useState([])
+  const [loading, setLoading]         = useState(true)
+  const [fetchError, setFetchError]   = useState(null)
+  const [filters, setFilters]         = useState({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
   const [myRequests, setMyRequests]   = useState({})
   const [requestError, setRequestError] = useState('')
 
   const fetchUsers = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('users').select('*').order('last_seen_at', { ascending: false })
-    if (error) {
-      setFetchError(`${error.code}: ${error.message}`)
-      setLoading(false); return
-    }
-    setFetchError(null)
-    setUsers(data ?? [])
-    setLoading(false)
+    const { data, error } = await supabase.from('users').select('*').order('last_seen_at', { ascending: false })
+    if (error) { setFetchError(`${error.code}: ${error.message}`); setLoading(false); return }
+    setFetchError(null); setUsers(data ?? []); setLoading(false)
   }, [])
 
   useEffect(() => {
     fetchUsers()
-    const channel = supabase
-      .channel('realtime:users')
+    const channel = supabase.channel('realtime:users')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, fetchUsers)
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [fetchUsers])
 
-  // 自分が送った DM 申請を一括取得
   useEffect(() => {
-    supabase
-      .from('dm_requests')
-      .select('receiver_id, status')
-      .eq('sender_id', user.id)
+    supabase.from('dm_requests').select('receiver_id, status').eq('sender_id', user.id)
       .then(({ data }) => {
         const map = {}
         ;(data ?? []).forEach((r) => { map[r.receiver_id] = r.status })
@@ -330,52 +390,39 @@ export default function UsersPage() {
       })
   }, [user.id])
 
-  // 申請を送信してプッシュ通知を送る
   const handleSendRequest = async (targetId, targetNickname) => {
-    setMyRequests((prev) => ({ ...prev, [targetId]: 'pending' })) // 楽観的更新
+    setMyRequests((prev) => ({ ...prev, [targetId]: 'pending' }))
     const { error } = await supabase.from('dm_requests').upsert(
       { sender_id: user.id, sender_nickname: user.nickname, receiver_id: targetId, status: 'pending' },
       { onConflict: 'sender_id,receiver_id' }
     )
     if (error) {
       console.error('[dm_requests] upsert失敗:', error.code, error.message)
-      setMyRequests((prev) => ({ ...prev, [targetId]: undefined })) // 楽観的更新を戻す
+      setMyRequests((prev) => ({ ...prev, [targetId]: undefined }))
       setRequestError(`申請の送信に失敗しました: ${error.message}`)
       setTimeout(() => setRequestError(''), 8000)
       return
     }
-    triggerPushNotification({
-      receiverId: targetId,
-      senderName: user.nickname,
-      senderId: user.id,
-      content: 'DMの申請が届いています',
-    })
+    triggerPushNotification({ receiverId: targetId, senderName: user.nickname, senderId: user.id, content: 'DMの申請が届いています' })
   }
 
-  const handleFilterChange = (key, value) => {
-    setFilters((prev) => ({ ...prev, [key]: value }))
-  }
+  const handleFilterChange = (key, value) => setFilters((prev) => ({ ...prev, [key]: value }))
+  const handleFilterReset  = () => setFilters({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
 
-  const handleFilterReset = () => {
-    setFilters({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
-  }
+  const filteredUsers = useMemo(() => users.filter((u) => {
+    if (filters.gender && u.gender !== filters.gender) return false
+    if (filters.ageMin !== '' && (u.age == null || u.age < Number(filters.ageMin))) return false
+    if (filters.ageMax !== '' && (u.age == null || u.age > Number(filters.ageMax))) return false
+    if (filters.prefecture && u.prefecture !== filters.prefecture) return false
+    return true
+  }), [users, filters])
 
-  // クライアントサイドでフィルタリング
-  const filteredUsers = useMemo(() => {
-    return users.filter((u) => {
-      if (filters.gender && u.gender !== filters.gender) return false
-      if (filters.ageMin !== '' && (u.age == null || u.age < Number(filters.ageMin))) return false
-      if (filters.ageMax !== '' && (u.age == null || u.age > Number(filters.ageMax))) return false
-      if (filters.prefecture && u.prefecture !== filters.prefecture) return false
-      return true
-    })
-  }, [users, filters])
-
-  const anyError = dbError || fetchError
-  const showDiag = anyError || (!loading && users.length === 0)
+  const anyError  = dbError || fetchError
+  const showDiag  = anyError || (!loading && users.length === 0)
 
   return (
     <div className="max-w-lg mx-auto w-full px-4 py-4 space-y-3">
+
       {/* ヘッダー */}
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-gray-700">👥 ユーザー一覧</p>
@@ -384,6 +431,9 @@ export default function UsersPage() {
           再読み込み
         </button>
       </div>
+
+      {/* ランダムマッチング */}
+      <RandomMatchPanel user={user} onMatch={() => {}} />
 
       {anyError && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
@@ -399,17 +449,9 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* フィルターパネル */}
-      <FilterPanel
-        filters={filters}
-        onChange={handleFilterChange}
-        onReset={handleFilterReset}
-        count={filteredUsers.length}
-      />
+      <FilterPanel filters={filters} onChange={handleFilterChange} onReset={handleFilterReset} count={filteredUsers.length} />
 
-      {loading && (
-        <p className="text-center text-gray-400 text-sm py-4">読み込み中...</p>
-      )}
+      {loading && <p className="text-center text-gray-400 text-sm py-4">読み込み中...</p>}
 
       {!loading && filteredUsers.length === 0 && !anyError && (
         <p className="text-center text-gray-400 text-sm py-4">
@@ -418,18 +460,10 @@ export default function UsersPage() {
       )}
 
       {filteredUsers.map((u) => (
-        <UserCard
-          key={u.id}
-          u={u}
-          me={user}
-          requestStatus={myRequests[u.id]}
-          onSendRequest={handleSendRequest}
-        />
+        <UserCard key={u.id} u={u} me={user} requestStatus={myRequests[u.id]} onSendRequest={handleSendRequest} />
       ))}
 
-      {showDiag && (
-        <DiagPanel user={user} onRetryRegister={fetchUsers} />
-      )}
+      {showDiag && <DiagPanel user={user} onRetryRegister={fetchUsers} />}
     </div>
   )
 }
