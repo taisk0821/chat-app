@@ -6,82 +6,200 @@ import { PREFECTURES, GENDERS } from '../constants/profile'
 import PostCard from '../components/PostCard'
 
 
+// ---- ストレージ SQL ガイド ----
+const STORAGE_SQL = `-- Supabase SQL Editor で実行してください
+
+-- avatarsバケット作成（公開設定）
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- avatarsストレージポリシー（全操作を許可）
+DROP POLICY IF EXISTS "avatars_allow_all" ON storage.objects;
+CREATE POLICY "avatars_allow_all" ON storage.objects
+FOR ALL USING (bucket_id = 'avatars') WITH CHECK (bucket_id = 'avatars');
+
+-- coversバケット作成（公開設定）
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('covers', 'covers', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- coversストレージポリシー（全操作を許可）
+DROP POLICY IF EXISTS "covers_allow_all" ON storage.objects;
+CREATE POLICY "covers_allow_all" ON storage.objects
+FOR ALL USING (bucket_id = 'covers') WITH CHECK (bucket_id = 'covers');`
+
+// ファイルの MIME タイプを安全に取得（iOS Camera では空の場合がある）
+function safeContentType(file) {
+  if (file.type) return file.type
+  const ext = file.name.split('.').pop().toLowerCase()
+  const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' }
+  return map[ext] ?? 'image/jpeg'
+}
+
 // ---- アバターアップロード ----
+// <label> を使うことで iOS Safari でも確実にファイルダイアログが開く
 function AvatarUpload({ user, onUploaded }) {
-  const ref = useRef(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+
   const handleChange = async (e) => {
     const file = e.target.files[0]
-    if (!file || !file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) return
-    setUploading(true)
-    const ext = file.name.split('.').pop().toLowerCase()
-    const path = `${user.id}.${ext}`
-    const { error } = await supabase.storage.from('avatars').upload(path, file, { upsert: true, contentType: file.type })
-    if (!error) {
-      const { data } = supabase.storage.from('avatars').getPublicUrl(path)
-      await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
+    // 同じファイルを再選択できるようリセット
+    e.target.value = ''
+
+    if (!file) return
+
+    // ファイルサイズチェック（5MB）
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError('5MB以下の画像を選択してください')
+      return
     }
+
+    setUploading(true)
+    setUploadError('')
+
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const path = `${user.id}.${ext}`
+    const contentType = safeContentType(file)
+
+    const { error: uploadErr } = await supabase.storage
+      .from('avatars')
+      .upload(path, file, { upsert: true, contentType })
+
+    if (uploadErr) {
+      console.error('[Storage] アバターアップロード失敗:', uploadErr.message, uploadErr)
+      setUploadError(uploadErr.message)
+      setUploading(false)
+      return
+    }
+
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path)
+    await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
     setUploading(false)
   }
+
   return (
-    <div onClick={() => !uploading && ref.current?.click()} className="cursor-pointer group relative">
-      <div className="w-20 h-20 rounded-full overflow-hidden ring-4 ring-white shadow-md">
-        {user.avatar_url
-          ? <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
-          : <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-3xl">
-              {user.nickname[0].toUpperCase()}
-            </div>
-        }
-      </div>
-      <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-        <span className="text-white text-[10px] font-medium">{uploading ? '...' : '変更'}</span>
-      </div>
-      <input ref={ref} type="file" accept="image/*" className="hidden" onChange={handleChange} />
+    <div className="relative">
+      {/* label で囲むことで iOS Safari でも動作する */}
+      <label className={`block group relative w-20 h-20 ${uploading ? 'pointer-events-none' : 'cursor-pointer'}`}>
+        <div className="w-20 h-20 rounded-full overflow-hidden ring-4 ring-white shadow-md">
+          {user.avatar_url
+            ? <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+            : <div className="w-full h-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-3xl">
+                {user.nickname[0].toUpperCase()}
+              </div>
+          }
+        </div>
+        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+          <span className="text-white text-[10px] font-medium text-center px-1">
+            {uploading ? '保存中...' : '📷\n変更'}
+          </span>
+        </div>
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          disabled={uploading}
+          onChange={handleChange}
+        />
+      </label>
+
+      {/* アップロード中スピナー */}
+      {uploading && (
+        <div className="absolute -bottom-1 left-1/2 -translate-x-1/2">
+          <div className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin" />
+        </div>
+      )}
+
+      {/* エラー表示 */}
+      {uploadError && (
+        <div className="absolute top-full left-0 mt-2 z-20 w-72 bg-white border border-red-200 rounded-2xl shadow-xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-red-600">⚠ アップロード失敗</p>
+          <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+          <details className="text-xs">
+            <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQLを表示</summary>
+            <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
+          </details>
+          <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
+        </div>
+      )}
     </div>
   )
 }
 
 // ---- カバー画像アップロード ----
 function CoverUpload({ user, onUploaded }) {
-  const ref = useRef(null)
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+
   const handleChange = async (e) => {
     const file = e.target.files[0]
-    if (!file || !file.type.startsWith('image/') || file.size > 10 * 1024 * 1024) return
-    setUploading(true)
-    const ext = file.name.split('.').pop().toLowerCase()
-    const path = `${user.id}.${ext}`
-    const { error } = await supabase.storage.from('covers').upload(path, file, { upsert: true, contentType: file.type })
-    if (!error) {
-      const { data } = supabase.storage.from('covers').getPublicUrl(path)
-      await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
+    e.target.value = ''
+
+    if (!file) return
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('10MB以下の画像を選択してください')
+      return
     }
+
+    setUploading(true)
+    setUploadError('')
+
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const path = `${user.id}.${ext}`
+    const contentType = safeContentType(file)
+
+    const { error: uploadErr } = await supabase.storage
+      .from('covers')
+      .upload(path, file, { upsert: true, contentType })
+
+    if (uploadErr) {
+      console.error('[Storage] カバーアップロード失敗:', uploadErr.message, uploadErr)
+      setUploadError(uploadErr.message)
+      setUploading(false)
+      return
+    }
+
+    const { data } = supabase.storage.from('covers').getPublicUrl(path)
+    await onUploaded(`${data.publicUrl}?t=${Date.now()}`)
     setUploading(false)
   }
+
   return (
-    <>
-      <div
-        onClick={() => !uploading && ref.current?.click()}
-        className="relative h-36 bg-gradient-to-r from-indigo-400 to-purple-500 cursor-pointer group overflow-hidden"
-      >
-        {user.cover_url
-          ? <img src={user.cover_url} alt="cover" className="w-full h-full object-cover" />
-          : <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
-              <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
-                {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
-              </span>
-            </div>
-        }
+    <div className="relative">
+      <label className={`block relative h-36 bg-gradient-to-r from-indigo-400 to-purple-500 overflow-hidden group ${uploading ? 'pointer-events-none' : 'cursor-pointer'}`}>
         {user.cover_url && (
-          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center opacity-0 group-hover:opacity-100">
-            <span className="text-white text-xs font-medium bg-black/50 px-3 py-1.5 rounded-full">
-              {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
-            </span>
-          </div>
+          <img src={user.cover_url} alt="cover" className="absolute inset-0 w-full h-full object-cover" />
         )}
-      </div>
-      <input ref={ref} type="file" accept="image/*" className="hidden" onChange={handleChange} />
-    </>
+        <div className={`absolute inset-0 flex items-center justify-center transition ${
+          user.cover_url ? 'bg-black/0 group-hover:bg-black/30 opacity-0 group-hover:opacity-100' : 'opacity-100'
+        }`}>
+          <span className="text-white text-xs font-medium bg-black/40 px-3 py-1.5 rounded-full">
+            {uploading ? 'アップロード中...' : '📷 カバー写真を変更'}
+          </span>
+        </div>
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          disabled={uploading}
+          onChange={handleChange}
+        />
+      </label>
+
+      {uploadError && (
+        <div className="mx-4 mt-2 bg-white border border-red-200 rounded-2xl shadow-lg p-3 space-y-2">
+          <p className="text-xs font-semibold text-red-600">⚠ カバー写真アップロード失敗</p>
+          <p className="text-xs text-red-500 font-mono break-all">{uploadError}</p>
+          <details className="text-xs">
+            <summary className="cursor-pointer text-gray-400 hover:text-gray-600">ストレージ設定SQLを表示</summary>
+            <pre className="mt-1 bg-gray-900 text-green-300 text-[9px] rounded-lg p-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">{STORAGE_SQL}</pre>
+          </details>
+          <button onClick={() => setUploadError('')} className="text-xs text-gray-400 hover:text-gray-600">閉じる</button>
+        </div>
+      )}
+    </div>
   )
 }
 
