@@ -154,7 +154,7 @@ export function UserProvider({ children }) {
   }
 
   const updateProfile = async (bio, hobbies, age, gender, prefecture, isPrivate = false) => {
-    if (!user) return
+    if (!user) return { ok: false, error: 'ユーザー未ログイン' }
     const patch = {
       bio,
       hobbies,
@@ -164,10 +164,14 @@ export function UserProvider({ children }) {
       is_private: isPrivate === true,
     }
     const { error } = await supabase.from('users').update(patch).eq('id', user.id)
-    if (error) { console.error('[DB] updateProfile失敗:', error.message); return }
+    if (error) {
+      console.error('[DB] updateProfile失敗:', error.message, error.code)
+      return { ok: false, error: error.message }
+    }
     const updated = { ...user, ...patch }
     localStorage.setItem('chat_user', JSON.stringify(updated))
     setUser(updated)
+    return { ok: true }
   }
 
   const updateAvatar = async (avatarUrl) => {

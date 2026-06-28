@@ -174,16 +174,23 @@ export default function ProfilePage() {
   const [isPrivate, setIsPrivate] = useState(user?.is_private ?? false)
   const [saving, setSaving]       = useState(false)
   const [saved, setSaved]         = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (age !== '' && (Number(age) < 0 || Number(age) > 120)) return
     setSaving(true)
-    await updateProfile(bio.trim(), hobbies.trim(), age, gender, prefecture, isPrivate)
+    setSaveError('')
+    setSaved(false)
+    const { ok, error } = await updateProfile(bio.trim(), hobbies.trim(), age, gender, prefecture, isPrivate)
     setSaving(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    if (ok) {
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } else {
+      setSaveError(error ?? '保存に失敗しました。しばらく経ってから再試行してください。')
+    }
   }
 
   const handleDeleted = () => {
@@ -279,12 +286,26 @@ export default function ProfilePage() {
             </button>
           </div>
 
+          {saveError && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 space-y-1">
+              <p className="font-semibold">⚠ 保存に失敗しました</p>
+              <p className="text-red-500 font-mono break-all">{saveError}</p>
+              <p className="text-red-400 mt-1">
+                Supabase の users テーブルに <code className="bg-red-100 px-1 rounded">is_private</code> カラムが存在しない可能性があります。
+                下記 SQL を Supabase の SQL Editor で実行してください。
+              </p>
+              <pre className="bg-gray-900 text-green-300 text-[10px] rounded-lg p-2 overflow-x-auto mt-2 whitespace-pre-wrap leading-relaxed">{`ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE;`}</pre>
+            </div>
+          )}
+
           <button type="submit" disabled={saving}
             className={`w-full font-semibold rounded-xl py-2.5 transition ${
-              saved ? 'bg-green-500 text-white'
-                    : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
+              saved      ? 'bg-green-500 text-white'
+              : saveError ? 'bg-red-500 hover:bg-red-600 text-white'
+              : 'bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-200 text-white'
             }`}>
-            {saving ? '保存中...' : saved ? '✓ 保存しました' : '保存する'}
+            {saving ? '保存中...' : saved ? '✓ 保存しました' : saveError ? '再試行する' : '保存する'}
           </button>
         </form>
 
