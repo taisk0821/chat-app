@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
 import { PREFECTURES, GENDERS, GENDER_LABEL } from '../constants/profile'
+import { triggerPushNotification } from '../hooks/usePushNotifications'
 
 function isOnline(lastSeen) {
   if (!lastSeen) return false
@@ -127,15 +128,52 @@ function FilterPanel({ filters, onChange, onReset, count }) {
 }
 
 // ---- ユーザーカード ----
-function UserCard({ u, me, onNavigate }) {
+// requestStatus: undefined | 'pending' | 'accepted' | 'rejected'
+function UserCard({ u, me, requestStatus, onSendRequest }) {
   const navigate = useNavigate()
   const online = isOnline(u.last_seen_at)
 
-  // プロフィール情報のバッジ
   const badges = []
   if (u.age) badges.push(`${u.age}歳`)
   if (u.gender && u.gender !== 'private') badges.push(GENDER_LABEL[u.gender])
   if (u.prefecture) badges.push(u.prefecture)
+
+  // 右側ボタンの設定
+  const getButton = () => {
+    if (!u.is_private) {
+      return {
+        label: '話しかける',
+        cls: 'bg-indigo-500 hover:bg-indigo-600 text-white',
+        disabled: false,
+        onClick: () => navigate(`/dm/${u.id}`),
+      }
+    }
+    if (requestStatus === 'accepted') {
+      return {
+        label: '💬 話しかける',
+        cls: 'bg-indigo-500 hover:bg-indigo-600 text-white',
+        disabled: false,
+        onClick: () => navigate(`/dm/${u.id}`),
+      }
+    }
+    if (requestStatus === 'pending') {
+      return {
+        label: '🕐 申請済み',
+        cls: 'bg-gray-100 text-gray-400 cursor-not-allowed',
+        disabled: true,
+        onClick: () => {},
+      }
+    }
+    // 未申請 or 拒否済み
+    return {
+      label: '🔒 申請する',
+      cls: 'border border-indigo-300 text-indigo-600 hover:bg-indigo-50',
+      disabled: false,
+      onClick: () => onSendRequest(u.id, u.nickname),
+    }
+  }
+
+  const btn = getButton()
 
   return (
     <div className="bg-white rounded-2xl px-4 py-3 shadow-sm flex items-center gap-3">
@@ -165,27 +203,20 @@ function UserCard({ u, me, onNavigate }) {
           {badges.length > 0 && (
             <div className="flex items-center gap-1 flex-wrap mt-1">
               {badges.map((b) => (
-                <span key={b} className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">
-                  {b}
-                </span>
+                <span key={b} className="text-[10px] text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded-full">{b}</span>
               ))}
             </div>
           )}
-          {u.bio && (
-            <p className="text-xs text-gray-400 mt-0.5 truncate">{u.bio}</p>
-          )}
+          {u.bio && <p className="text-xs text-gray-400 mt-0.5 truncate">{u.bio}</p>}
         </div>
       </button>
       {u.id !== me.id && (
         <button
-          onClick={() => u.is_private ? navigate(`/profile/${u.id}`) : navigate(`/dm/${u.id}`)}
-          className={`shrink-0 text-xs px-3 py-1.5 rounded-xl transition font-medium ${
-            u.is_private
-              ? 'border border-gray-300 text-gray-600 hover:bg-gray-50'
-              : 'bg-indigo-500 hover:bg-indigo-600 text-white'
-          }`}
+          onClick={btn.onClick}
+          disabled={btn.disabled}
+          className={`shrink-0 text-xs px-3 py-1.5 rounded-xl transition font-medium ${btn.cls}`}
         >
-          {u.is_private ? '🔒 申請する' : '話しかける'}
+          {btn.label}
         </button>
       )}
     </div>
@@ -240,10 +271,12 @@ function DiagPanel({ user, onRetryRegister }) {
 export default function UsersPage() {
   const { user, dbError } = useUser()
   const navigate = useNavigate()
-  const [users, setUsers] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [users, setUsers]         = useState([])
+  const [loading, setLoading]     = useState(true)
   const [fetchError, setFetchError] = useState(null)
-  const [filters, setFilters] = useState({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
+  const [filters, setFilters]     = useState({ gender: '', ageMin: '', ageMax: '', prefecture: '' })
+  // { [receiverId]: 'pending'|'accepted'|'rejected' }
+  const [myRequests, setMyRequests] = useState({})
 
   const fetchUsers = useCallback(async () => {
     setLoading(true)
@@ -266,6 +299,38 @@ export default function UsersPage() {
       .subscribe()
     return () => supabase.removeChannel(channel)
   }, [fetchUsers])
+
+  // 自分が送った DM 申請を一括取得
+  useEffect(() => {
+    supabase
+      .from('dm_requests')
+      .select('receiver_id, status')
+      .eq('sender_id', user.id)
+      .then(({ data }) => {
+        const map = {}
+        ;(data ?? []).forEach((r) => { map[r.receiver_id] = r.status })
+        setMyRequests(map)
+      })
+  }, [user.id])
+
+  // 申請を送信してプッシュ通知を送る
+  const handleSendRequest = async (targetId, targetNickname) => {
+    setMyRequests((prev) => ({ ...prev, [targetId]: 'pending' })) // 楽観的更新
+    const { error } = await supabase.from('dm_requests').upsert(
+      { sender_id: user.id, sender_nickname: user.nickname, receiver_id: targetId, status: 'pending' },
+      { onConflict: 'sender_id,receiver_id' }
+    )
+    if (!error) {
+      triggerPushNotification({
+        receiverId: targetId,
+        senderName: user.nickname,
+        senderId: user.id,
+        content: 'DMの申請が届いています',
+      })
+    } else {
+      setMyRequests((prev) => ({ ...prev, [targetId]: undefined }))
+    }
+  }
 
   const handleFilterChange = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }))
@@ -325,7 +390,13 @@ export default function UsersPage() {
       )}
 
       {filteredUsers.map((u) => (
-        <UserCard key={u.id} u={u} me={user} />
+        <UserCard
+          key={u.id}
+          u={u}
+          me={user}
+          requestStatus={myRequests[u.id]}
+          onSendRequest={handleSendRequest}
+        />
       ))}
 
       {showDiag && (

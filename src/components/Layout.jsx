@@ -13,10 +13,11 @@ import {
 
 // タブ定義
 const TABS = [
-  { to: '/chat',    label: 'チャット', icon: ChatIcon },
-  { to: '/talks',   label: 'トーク',   icon: TalkIcon },
-  { to: '/users',   label: 'ユーザー', icon: UsersIcon },
-  { to: '/profile', label: 'マイページ', icon: ProfileIcon },
+  { to: '/chat',     label: 'チャット',  icon: ChatIcon },
+  { to: '/talks',    label: 'トーク',    icon: TalkIcon },
+  { to: '/requests', label: '申請',      icon: RequestIcon },
+  { to: '/users',    label: 'ユーザー',  icon: UsersIcon },
+  { to: '/profile',  label: 'マイページ', icon: ProfileIcon },
 ]
 
 // ── SVG アイコン ────────────────────────────────────────────
@@ -60,6 +61,17 @@ function ProfileIcon({ active }) {
       strokeWidth={active ? 0 : 1.8} className="w-6 h-6">
       <path strokeLinecap="round" strokeLinejoin="round"
         d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  )
+}
+
+function RequestIcon({ active }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+      fill={active ? 'currentColor' : 'none'} stroke="currentColor"
+      strokeWidth={active ? 0 : 1.8} className="w-6 h-6">
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M2.25 13.5h3.86a2.25 2.25 0 012.012 1.244l.256.512a2.25 2.25 0 002.013 1.244h3.218a2.25 2.25 0 002.013-1.244l.256-.512a2.25 2.25 0 012.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 00-2.15-1.588H6.911a2.25 2.25 0 00-2.15 1.588L2.35 13.177a2.25 2.25 0 00-.1.661z" />
     </svg>
   )
 }
@@ -110,8 +122,9 @@ export default function Layout({ children }) {
   const [bannerDismissed, dismissBanner] = usePushBannerDismissed()
 
   const isActive = (to) => {
-    if (to === '/talks') return location.pathname === '/talks' || location.pathname.startsWith('/dm/')
-    if (to === '/users') return location.pathname === '/users' || location.pathname.startsWith('/profile/')
+    if (to === '/talks')    return location.pathname === '/talks' || location.pathname.startsWith('/dm/')
+    if (to === '/requests') return location.pathname === '/requests'
+    if (to === '/users')    return location.pathname === '/users' || location.pathname.startsWith('/profile/')
     return location.pathname === to
   }
 
@@ -219,9 +232,9 @@ export default function Layout({ children }) {
       )}
 
       {/* ── DM申請トースト ── */}
-      {requestNotif && location.pathname !== '/talks' && (
+      {requestNotif && location.pathname !== '/requests' && (
         <div
-          onClick={() => { navigate('/talks'); setRequestNotif(null) }}
+          onClick={() => { navigate('/requests'); setRequestNotif(null) }}
           style={{ bottom: `calc(${TAB_H}px + env(safe-area-inset-bottom, 0px) + 12px)` }}
           className="fixed left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-sm bg-gray-900 text-white rounded-2xl px-4 py-3 shadow-xl cursor-pointer flex items-center gap-3 z-50"
         >
@@ -245,10 +258,11 @@ export default function Layout({ children }) {
         <div className="flex items-stretch justify-around" style={{ height: `${TAB_H}px` }}>
           {TABS.map(({ to, label, icon: Icon }) => {
             const active = isActive(to)
-            const talksBadge = totalUnread + (to === '/talks' ? pendingRequests : 0)
-            const badge = to === '/talks' && talksBadge > 0
-              ? (talksBadge > 9 ? '9+' : String(talksBadge))
-              : null
+            const badgeNum =
+              to === '/talks'    ? totalUnread :
+              to === '/requests' ? pendingRequests :
+              0
+            const badge = badgeNum > 0 ? (badgeNum > 9 ? '9+' : String(badgeNum)) : null
 
             return (
               <Link

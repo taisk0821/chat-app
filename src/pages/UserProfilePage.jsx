@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../supabaseClient'
 import { useUser } from '../context/UserContext'
 import ReportModal from '../components/ReportModal'
+import { triggerPushNotification } from '../hooks/usePushNotifications'
 
 function isOnline(lastSeen) {
   if (!lastSeen) return false
@@ -96,6 +97,13 @@ export default function UserProfilePage() {
     )
     setRequestStatus('pending')
     setRequestLoading(false)
+    // プッシュ通知
+    triggerPushNotification({
+      receiverId: profile.id,
+      senderName: user.nickname,
+      senderId: user.id,
+      content: 'DMの申請が届いています',
+    })
   }
 
   if (loading) {
