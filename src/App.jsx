@@ -13,6 +13,7 @@ import UserProfilePage from './pages/UserProfilePage'
 import FollowListPage from './pages/FollowListPage'
 import RequestsPage from './pages/RequestsPage'
 import AdminPage from './pages/AdminPage'
+import SettingsPage from './pages/SettingsPage'
 
 function PrivateRoute({ children }) {
   const { user } = useUser()
@@ -39,6 +40,7 @@ function ChatApp() {
           <Route path="/profile/:userId" element={<PrivateRoute><Layout><UserProfilePage /></Layout></PrivateRoute>} />
           <Route path="/follows/:userId/:type" element={<PrivateRoute><Layout><FollowListPage /></Layout></PrivateRoute>} />
           <Route path="/requests" element={<PrivateRoute><Layout><RequestsPage /></Layout></PrivateRoute>} />
+          <Route path="/settings" element={<PrivateRoute><Layout><SettingsPage /></Layout></PrivateRoute>} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>
       </DMProvider>

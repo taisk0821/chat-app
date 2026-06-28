@@ -23,6 +23,10 @@ export default function UserProfilePage() {
   const [requestLoading, setRequestLoading] = useState(false)
   const [dmRequestError, setDmRequestError] = useState('')
   const [reportOpen, setReportOpen]         = useState(false)
+  const [isBlocked, setIsBlocked]           = useState(false)
+  const [isHidden, setIsHidden]             = useState(false)
+  const [blockLoading, setBlockLoading]     = useState(false)
+  const [hideLoading, setHideLoading]       = useState(false)
   const [isFollowing, setIsFollowing]       = useState(false)
   const [followersCount, setFollowersCount] = useState(0)
   const [followingCount, setFollowingCount] = useState(0)
@@ -56,6 +60,52 @@ export default function UserProfilePage() {
       setIsFollowing((selfFollow.count ?? 0) > 0)
     })
   }, [profile?.id, user.id])
+
+  // ブロック・非表示状態を取得
+  useEffect(() => {
+    if (!profile || profile.id === user.id) return
+    Promise.all([
+      supabase.from('blocks').select('id').eq('blocker_id', user.id).eq('blocked_id', profile.id).maybeSingle(),
+      supabase.from('hidden_users').select('id').eq('hider_id', user.id).eq('hidden_id', profile.id).maybeSingle(),
+    ]).then(([blockRes, hideRes]) => {
+      setIsBlocked(!!blockRes.data)
+      setIsHidden(!!hideRes.data)
+    })
+  }, [profile?.id, user.id])
+
+  const toggleBlock = async () => {
+    if (!profile || blockLoading) return
+    setBlockLoading(true)
+    if (isBlocked) {
+      await supabase.from('blocks').delete().eq('blocker_id', user.id).eq('blocked_id', profile.id)
+      setIsBlocked(false)
+    } else {
+      await supabase.from('blocks').insert({
+        blocker_id: user.id,
+        blocked_id: profile.id,
+        blocked_nickname: profile.nickname,
+      })
+      setIsBlocked(true)
+    }
+    setBlockLoading(false)
+  }
+
+  const toggleHide = async () => {
+    if (!profile || hideLoading) return
+    setHideLoading(true)
+    if (isHidden) {
+      await supabase.from('hidden_users').delete().eq('hider_id', user.id).eq('hidden_id', profile.id)
+      setIsHidden(false)
+    } else {
+      await supabase.from('hidden_users').insert({
+        hider_id: user.id,
+        hidden_id: profile.id,
+        hidden_nickname: profile.nickname,
+      })
+      setIsHidden(true)
+    }
+    setHideLoading(false)
+  }
 
   const loadPosts = useCallback(async () => {
     if (!profile) return
@@ -220,6 +270,34 @@ export default function UserProfilePage() {
                 title="通報する"
               >
                 🚩
+              </button>
+            )}
+            {!isMe && (
+              <button
+                onClick={toggleHide}
+                disabled={hideLoading}
+                title={isHidden ? '非表示を解除' : '非表示にする'}
+                className={`w-9 h-9 rounded-full border flex items-center justify-center transition text-sm disabled:opacity-50 ${
+                  isHidden
+                    ? 'bg-gray-100 border-gray-300 text-gray-500'
+                    : 'border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                {isHidden ? '👁' : '🙈'}
+              </button>
+            )}
+            {!isMe && (
+              <button
+                onClick={toggleBlock}
+                disabled={blockLoading}
+                title={isBlocked ? 'ブロックを解除' : 'ブロックする'}
+                className={`w-9 h-9 rounded-full border flex items-center justify-center transition text-sm disabled:opacity-50 ${
+                  isBlocked
+                    ? 'bg-red-50 border-red-300 text-red-500'
+                    : 'border-gray-200 text-gray-400 hover:text-red-400 hover:border-red-200'
+                }`}
+              >
+                🚫
               </button>
             )}
             {!isMe && (

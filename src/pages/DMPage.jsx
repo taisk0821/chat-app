@@ -33,7 +33,7 @@ export default function DMPage() {
   const [messages, setMessages]       = useState([])
   const [input, setInput]             = useState('')
   const [sending, setSending]         = useState(false)
-  const [access, setAccess]           = useState('loading') // 'loading'|'granted'
+  const [access, setAccess]           = useState('loading') // 'loading'|'granted'|'blocked'
   const [activeMatch, setActiveMatch] = useState(null)      // null | { id, ... }
   const [unmatching, setUnmatching]   = useState(false)
   const [unmatchError, setUnmatchError] = useState('')
@@ -56,6 +56,16 @@ export default function DMPage() {
     if (!partner || !user) return
 
     const check = async () => {
+      // ブロックチェック（双方向）
+      const { data: blockData } = await supabase
+        .from('blocks')
+        .select('id')
+        .or(
+          `and(blocker_id.eq.${user.id},blocked_id.eq.${partner.id}),and(blocker_id.eq.${partner.id},blocked_id.eq.${user.id})`
+        )
+        .maybeSingle()
+      if (blockData) { setAccess('blocked'); return }
+
       // まずアクティブマッチを確認（プライベート問わず取得）
       const match = await fetchActiveMatch(user.id, partner.id)
       setActiveMatch(match)
@@ -174,6 +184,26 @@ export default function DMPage() {
     return (
       <div className="flex-1 flex items-center justify-center">
         <p className="text-gray-400 text-sm">読み込み中...</p>
+      </div>
+    )
+  }
+
+  if (access === 'blocked') {
+    return (
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="text-center space-y-3">
+          <div className="text-5xl">🚫</div>
+          <h2 className="text-base font-bold text-gray-800">メッセージを送れません</h2>
+          <p className="text-sm text-gray-500 leading-relaxed">
+            ブロックが有効なため、このユーザーとのDMはご利用いただけません。
+          </p>
+          <button
+            onClick={() => navigate(-1)}
+            className="mt-2 text-sm text-indigo-500 hover:text-indigo-700 font-medium"
+          >
+            ← 戻る
+          </button>
+        </div>
       </div>
     )
   }
